@@ -1,0 +1,15 @@
+# Core (desktop) — planning, state, synthesis
+# nothing beyond the standard library
+
+# Any node that joins the bus (phase 2 onward)
+nats-py>=2.6
+
+# Telemetry for scheduler scoring. Optional; workers run without it.
+psutil>=5.9
+
+# MacBook (research.*)
+httpx>=0.27
+pypdf>=4.2
+
+# Raspberry Pi (hw.*)
+paho-mqtt>=1.6

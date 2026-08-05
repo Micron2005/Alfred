@@ -1,0 +1,23 @@
+# ZENBOOK — the one machine besides the desktop running its own model.
+# Nothing here says "atlas". Move this file, and engineering work moves.
+
+[bus]
+kind = "nats"
+url  = "nats://alfredpi.local:4222"
+
+[core]
+artifact_dir = "/mnt/alfred"
+provider   = "ollama"
+model      = "qwen2.5-coder:7b"       # 7b, not 14b: most Zenbooks are CPU-only
+ollama_url = "http://127.0.0.1:11434"
+
+[worker]
+id = "zenbook"
+concurrency = 1
+capabilities = [
+    "code.write", "code.test", "calc.engineering",
+    "cad.generate", "cad.inspect",     # FreeCAD: CPU-bound, needs the horsepower
+]
+
+# cad.generate will not be advertised unless FreeCAD is actually installed:
+#   sudo apt install freecad        (provides freecadcmd)
