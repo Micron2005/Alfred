@@ -1,0 +1,16 @@
+# Worker nodes (Zenbook, MacBook, Pi...): the machine offers its hands at boot.
+[Unit]
+Description=Alfred worker node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/%i/micron-os
+ExecStart=/usr/bin/python3 /home/%i/Alfred/run_node.py --bus nats://alfredpi.local:4222
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
