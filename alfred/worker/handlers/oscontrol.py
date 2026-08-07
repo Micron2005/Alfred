@@ -157,6 +157,54 @@ async def _act_setting_set(args: dict) -> tuple[int, str]:
         return 1, "only org.gnome.* settings are in the catalog"
     return await _run(["gsettings", "set", schema, str(args["key"]), str(args["value"])])
 
+# The house, not the self: paths Alfred may never edit, approval or no.
+# alfred/ is HIM — mind, memory, judgment. The machine layer (deploy, the
+# server, the entrypoints) stays owner-only for now. Everything else is the
+# house he keeps, and a butler may renovate the house — with approval, and
+# every change a git commit so any renovation is one revert from undone.
+_HOUSE_PROTECTED = (
+    "alfred/", ".git", "deploy/", "requirements.txt",
+    "run_server.py", "run_core.py", "run_worker.py", "run_node.py", "run_voice.py",
+)
+
+
+async def _act_house_edit(args: dict) -> tuple[int, str]:
+    """Edit a file of the OS itself — shell, apps, configs, docs. Alfred is
+    not his OS: he may change the house and must leave himself alone."""
+    import os
+    # The house is a SIBLING repository (~/micron-os). Alfred's own repo is
+    # not merely protected -- it is not even the operand.
+    repo = Path(str(args.get("repo") or (Path.home() / "micron-os")))
+    raw = str(args.get("path") or "").strip()
+    content = args.get("content")
+    if not raw or content is None:
+        return 1, "house_edit needs a path and the full new content"
+    target = (repo / raw).resolve()
+    try:
+        rel = target.relative_to(repo.resolve())
+    except ValueError:
+        return 1, f"{raw} escapes the house; refused"
+    rel_s = str(rel)
+    for guard in _HOUSE_PROTECTED:
+        if rel_s == guard.rstrip("/") or rel_s.startswith(guard):
+            return 1, (f"{rel_s} is protected: Alfred may renovate the house, "
+                       "never himself nor the machine layer")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    before = target.read_text() if target.exists() else None
+    target.write_text(str(content))
+    note = (f"replaced {len(before)} chars with {len(str(content))}"
+            if before is not None else f"created ({len(str(content))} chars)")
+    desc = str(args.get("description") or "house edit")[:120]
+    code, out = await _run(["git", "-C", str(repo), "add", rel_s])
+    if code == 0:
+        code, out = await _run([
+            "git", "-C", str(repo),
+            "-c", "user.name=Alfred", "-c", "user.email=alfred@micronos.local",
+            "commit", "-m", f"Alfred (owner approved): {desc}"])
+    commit_note = "committed; one git revert undoes it" if code == 0 else                   f"applied but commit failed: {out.strip()[:80]}"
+    return 0, f"{rel_s}: {note}; {commit_note}"
+
+
 async def _act_self_update(args: dict) -> tuple[int, str]:
     """Update Micron OS: pull what the owner pushed to the repo, then restart
     the core a few seconds later — delayed and detached, so this task's
@@ -167,12 +215,22 @@ async def _act_self_update(args: dict) -> tuple[int, str]:
     only — if the local clone has drifted, the pull refuses rather than
     merging surprises into a running butler."""
     import os
-    repo = Path(str(args.get("repo") or Path(__file__).resolve().parents[3]))
-    if not (repo / ".git").exists():
-        return 1, f"{repo} is not a git repository"
-    code, out = await _run(["git", "-C", str(repo), "pull", "--ff-only"])
-    if code != 0:
-        return code, out
+    # two repositories, one household: pull the butler, then the house
+    butler = Path(str(args.get("repo") or Path(__file__).resolve().parents[3]))
+    house = Path(str(args.get("house") or (Path.home() / "micron-os")))
+    outs = []
+    for name, repo in (("butler", butler), ("house", house)):
+        if not (repo / ".git").exists():
+            outs.append(f"{name}: no repository at {repo} (skipped)")
+            continue
+        code, out = await _run(["git", "-C", str(repo), "pull", "--ff-only"])
+        if code != 0:
+            return code, f"{name}: {out}"
+        tail = out.strip().splitlines()[-1] if out.strip() else "ok"
+        outs.append(f"{name}: {tail}")
+    out = "; ".join(outs)
+    if "Already up to date" in out and "Updating" not in out:
+        return 0, "Already up to date -- nothing to apply."
     if "Already up to date" in out:
         return 0, "Already up to date — nothing to apply."
     if args.get("restart", True):
@@ -201,6 +259,7 @@ ACTIONS = {
     "setting_set": (_act_setting_set, "change a GNOME desktop setting"),
     "file_write":  (_act_file_write, "write a file under the home directory"),
     "self_update": (_act_self_update, "pull the owner's pushed updates and restart"),
+    "house_edit":  (_act_house_edit, "edit the OS itself (shell/apps/configs/docs), never himself"),
 }
 
 
@@ -220,6 +279,8 @@ def describe_action(action: str, args: dict) -> str:
         return f"Write file {args.get('path')}"
     if action == "self_update":
         return "Update Micron OS from the repository and restart the core"
+    if action == "house_edit":
+        return f"Edit the house: {args.get('path')} — {str(args.get('description') or '')[:80]}"
     return f"{action} {args}"
 
 
