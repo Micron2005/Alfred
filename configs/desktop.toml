@@ -11,7 +11,7 @@ kind = "local"          # phase 1: one process, no server
 
 [core]
 state_db     = "~/.alfred/state.db"
-artifact_dir = "/mnt/alfred"          # NFS mount from the Pi, same path everywhere
+artifact_dir = "~/.alfred/artifacts"  # phase 1: local. Phase 2: /mnt/alfred
 fallback_after_s = 20
 supervisor_tick_s = 30
 
