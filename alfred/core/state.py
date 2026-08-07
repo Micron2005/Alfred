@@ -48,6 +48,27 @@ CREATE TABLE IF NOT EXISTS notices (
     id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT, kind TEXT,
     body TEXT, created_at REAL, delivered_at REAL);
 
+CREATE TABLE IF NOT EXISTS pending_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT,
+    description TEXT NOT NULL, task_json TEXT NOT NULL,
+    status TEXT DEFAULT 'pending',   -- pending | approved | declined | executed | failed
+    created_at REAL, decided_at REAL, result TEXT);
+
+CREATE TABLE IF NOT EXISTS facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject TEXT NOT NULL DEFAULT 'owner',   -- who/what the fact is about
+    key TEXT NOT NULL,                        -- e.g. 'preferred_name', 'units'
+    value TEXT NOT NULL,
+    source TEXT,                              -- how he learned it (verbatim ask)
+    confidence TEXT DEFAULT 'stated',         -- stated | inferred
+    learned_at REAL, updated_at REAL,
+    superseded_by INTEGER REFERENCES facts(id),
+    UNIQUE(subject, key, superseded_by));
+
+CREATE TABLE IF NOT EXISTS conversation (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT, role TEXT NOT NULL, body TEXT NOT NULL, at REAL);
+
 CREATE TABLE IF NOT EXISTS nodes (
     node_id TEXT PRIMARY KEY, name TEXT, hostname TEXT, profile TEXT,
     capabilities TEXT, note TEXT, enrolled_at REAL, last_seen REAL);
@@ -170,6 +191,107 @@ class State:
             "INSERT INTO artifacts (project_id,task_id,uri,kind,created_at) VALUES (?,?,?,?,?)",
             (project_id, task_id, uri, kind, time.time()),
         )
+
+    # ---- facts: the exact half of knowing the owner ---------------------
+
+    def learn(self, key: str, value: str, source: str = "",
+              subject: str = "owner", confidence: str = "stated") -> int:
+        """Record a durable fact. Re-learning a key supersedes the old value
+        rather than overwriting it — so "you told me metric in March, then
+        imperial in June" is a history, not a lie. The current value is the
+        one row per (subject,key) with superseded_by IS NULL."""
+        now = time.time()
+        prior = self.db.execute(
+            "SELECT id FROM facts WHERE subject=? AND key=? AND superseded_by IS NULL",
+            (subject, key)).fetchone()
+        cur = self._write(
+            "INSERT INTO facts (subject,key,value,source,confidence,learned_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (subject, key, value, source, confidence, now, now))
+        new_id = int(cur.lastrowid)
+        if prior:
+            self._write("UPDATE facts SET superseded_by=? WHERE id=?", (new_id, prior["id"]))
+        return new_id
+
+    def forget(self, key: str, subject: str = "owner") -> bool:
+        """Owner asked him to forget something. Supersede with a tombstone so
+        it stops surfacing but the history is not silently rewritten."""
+        row = self.db.execute(
+            "SELECT id FROM facts WHERE subject=? AND key=? AND superseded_by IS NULL",
+            (subject, key)).fetchone()
+        if not row:
+            return False
+        cur = self._write(
+            "INSERT INTO facts (subject,key,value,source,confidence,learned_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (subject, key, "(forgotten at owner's request)", "forget", "stated",
+             time.time(), time.time()))
+        self._write("UPDATE facts SET superseded_by=? WHERE id=?", (int(cur.lastrowid), row["id"]))
+        self._write("UPDATE facts SET superseded_by=-1 WHERE id=?", (int(cur.lastrowid),))
+        return True
+
+    def known_facts(self, subject: str = "owner") -> list[dict]:
+        """Current facts only — superseded and tombstoned rows excluded."""
+        return [dict(r) for r in self.db.execute(
+            "SELECT key, value, confidence FROM facts "
+            "WHERE subject=? AND superseded_by IS NULL AND value NOT LIKE '(forgotten%' "
+            "ORDER BY key", (subject,))]
+
+    def recall_fact(self, key: str, subject: str = "owner") -> str | None:
+        row = self.db.execute(
+            "SELECT value FROM facts WHERE subject=? AND key=? AND superseded_by IS NULL "
+            "AND value NOT LIKE '(forgotten%'", (subject, key)).fetchone()
+        return row["value"] if row else None
+
+    # ---- persisted conversation -----------------------------------------
+
+    def log_turn(self, role: str, body: str, project_id: str | None = None) -> None:
+        self._write("INSERT INTO conversation (project_id,role,body,at) VALUES (?,?,?,?)",
+                    (project_id, role, body[:4000], time.time()))
+
+    def recent_turns(self, limit: int = 6) -> list[tuple[str, str]]:
+        rows = self.db.execute(
+            "SELECT role, body FROM conversation ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [(r["role"], r["body"]) for r in reversed(rows)]
+
+    # ---- pending actions (owner approval gate for os.apply) --------------
+
+    def park_action(self, project_id: str | None, description: str, task_json: str) -> int:
+        cur = self._write(
+            "INSERT INTO pending_actions (project_id,description,task_json,created_at) "
+            "VALUES (?,?,?,?)",
+            (project_id, description, task_json, time.time()),
+        )
+        return int(cur.lastrowid)
+
+    def pending_actions(self) -> list[dict]:
+        return [dict(r) for r in self.db.execute(
+            "SELECT id,project_id,description,status,created_at FROM pending_actions "
+            "WHERE status='pending' ORDER BY created_at")]
+
+    def take_action(self, action_id: int) -> dict | None:
+        """Atomically claim a pending action for execution. Returns the row
+        or None if it was not pending — a double-click on Approve must not
+        run an apt install twice."""
+        cur = self._write(
+            "UPDATE pending_actions SET status='approved', decided_at=? "
+            "WHERE id=? AND status='pending'", (time.time(), action_id))
+        if cur.rowcount == 0:
+            return None
+        row = self.db.execute(
+            "SELECT * FROM pending_actions WHERE id=?", (action_id,)).fetchone()
+        return dict(row) if row else None
+
+    def decline_action(self, action_id: int) -> bool:
+        cur = self._write(
+            "UPDATE pending_actions SET status='declined', decided_at=? "
+            "WHERE id=? AND status='pending'", (time.time(), action_id))
+        return cur.rowcount > 0
+
+    def settle_action(self, action_id: int, ok: bool, result: str) -> None:
+        self._write(
+            "UPDATE pending_actions SET status=?, result=? WHERE id=?",
+            ("executed" if ok else "failed", result[:2000], action_id))
 
     # ---- nodes -----------------------------------------------------------
 

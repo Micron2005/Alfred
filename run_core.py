@@ -25,6 +25,10 @@ HELP = """/nodes                       machines seen, assigned and not
 /probe <node_id>             full hardware profile
 /adopt <node_id> [hint]      let Alfred propose a name and workload
 /assign <node_id> <name> <caps>   set it yourself, comma separated
+/memory                      what Alfred has learned about you
+/forget <key>                make him forget one fact
+/pending                     OS changes awaiting your approval
+/approve <id> | /decline <id>
 /help, /quit"""
 
 
@@ -40,6 +44,31 @@ async def handle_command(alfred, line: str) -> str:
 
     if cmd in {"/help", "/?"}:
         return HELP
+
+    if cmd == "/memory":
+        facts = alfred.state.known_facts("owner")
+        if not facts:
+            return "  (Alfred knows nothing about you yet)"
+        return "  What Alfred knows about you:\n" + "\n".join(
+            f"    {f['key'].replace('_',' ')}: {f['value']}"
+            + ("  (inferred)" if f["confidence"] == "inferred" else "")
+            for f in facts)
+
+    if cmd == "/forget" and rest:
+        key = "_".join(rest)
+        return "  forgotten" if alfred.state.forget(key) else f"  no such fact: {key}"
+
+    if cmd == "/pending":
+        rows = alfred.state.pending_actions()
+        if not rows:
+            return "  no changes awaiting approval"
+        return "\n".join(f"  #{r['id']}: {r['description']}" for r in rows)
+
+    if cmd == "/approve" and rest:
+        return "  " + await alfred.approve_action(int(rest[0]))
+
+    if cmd == "/decline" and rest:
+        return "  " + alfred.decline_action(int(rest[0]))
 
     if cmd == "/nodes":
         lines = []

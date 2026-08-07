@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mentor — Micron OS</title>
+<style>
+  :root{
+    --cave:#0A0E14; --panel:#10161F; --panel-2:#0D1219; --line:#1C2633;
+    --line-bright:#2A3A4F; --ink:#C9D4E3; --ink-dim:#6B7A8F;
+    --brass:#C8A24A; --brass-dim:#8A7239; --warn:#B85C4F;
+    --serif:Georgia,'Times New Roman',serif; --sans:system-ui,-apple-system,'Segoe UI',sans-serif;
+    --mono:ui-monospace,'Cascadia Mono',Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--cave);color:var(--ink);font:15px/1.6 var(--sans);display:flex}
+  aside{width:240px;background:var(--panel-2);border-right:1px solid var(--line);
+        padding:16px 14px;display:flex;flex-direction:column;gap:8px;overflow-y:auto}
+  aside h1{font-family:var(--serif);font-size:15px;letter-spacing:.3em;text-transform:uppercase;
+           color:var(--brass);font-weight:400;margin-bottom:6px}
+  .sess{border:1px solid var(--line);border-radius:4px;background:var(--panel);
+        padding:9px 11px;cursor:pointer}
+  .sess:hover{border-color:var(--brass-dim)}
+  .sess.on{border-color:var(--brass)}
+  .sess .t{font-size:13.5px}
+  .sess .m{font-family:var(--mono);font-size:10px;color:var(--ink-dim);margin-top:2px}
+  button{background:none;border:1px solid var(--line-bright);color:var(--ink);
+         font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+         padding:7px 10px;border-radius:3px;cursor:pointer}
+  button:hover{border-color:var(--brass-dim);color:var(--brass)}
+  button.primary{border-color:var(--brass-dim);color:var(--brass)}
+  button:disabled{opacity:.35;cursor:default}
+  .del{font-family:var(--mono);font-size:10px;color:var(--ink-dim);cursor:pointer;float:right}
+  .del:hover{color:var(--warn)}
+  #newform{border:1px solid var(--brass-dim);border-radius:4px;padding:10px;display:none;
+           flex-direction:column;gap:7px;background:var(--panel)}
+  #newform.on{display:flex}
+  #newform input,#newform select{background:var(--cave);border:1px solid var(--line);
+        color:var(--ink);padding:7px 9px;border-radius:3px;font-size:13px}
+  #newform input:focus,#newform select:focus{outline:none;border-color:var(--brass-dim)}
+  #newform label{font-family:var(--mono);font-size:10px;letter-spacing:.14em;
+        text-transform:uppercase;color:var(--ink-dim)}
+  main{flex:1;display:flex;flex-direction:column;min-width:0}
+  #head{padding:14px 22px;border-bottom:1px solid var(--line);display:flex;
+        align-items:baseline;gap:14px;flex-wrap:wrap}
+  #topic{font-family:var(--serif);font-size:17px;color:var(--brass)}
+  #meta{font-family:var(--mono);font-size:11px;color:var(--ink-dim);letter-spacing:.08em}
+  #actions{display:flex;gap:8px;padding:12px 22px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  #log{flex:1;overflow-y:auto;padding:20px 22px}
+  .turn{max-width:74ch;margin-bottom:18px}
+  .turn .who{font-family:var(--mono);font-size:11px;letter-spacing:.14em;
+             text-transform:uppercase;color:var(--ink-dim);margin-bottom:4px}
+  .turn.mentor{border-left:2px solid var(--brass);padding-left:14px}
+  .turn.mentor .who{color:var(--brass)}
+  .turn.you{margin-left:auto;text-align:right}
+  .turn .body{white-space:pre-wrap}
+  #thinking{display:none;color:var(--ink-dim);font-family:var(--mono);font-size:13px;
+            padding:0 22px 8px}
+  #thinking.on{display:block}
+  .empty{color:var(--ink-dim);font-style:italic;font-size:13px}
+  #bench{display:none;border-top:1px solid var(--line);background:var(--panel-2)}
+  #bench.on{display:block}
+  #benchbar{display:flex;gap:8px;align-items:center;padding:9px 22px;
+            border-bottom:1px solid var(--line)}
+  #benchbar .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.18em;
+                 text-transform:uppercase;color:var(--ink-dim);margin-right:auto}
+  #code{width:100%;height:150px;background:var(--cave);border:none;color:var(--ink);
+        font:13.5px/1.5 var(--mono);padding:12px 22px;resize:vertical}
+  #code:focus{outline:none}
+  #runout{font:12.5px/1.5 var(--mono);padding:10px 22px;max-height:120px;overflow-y:auto;
+          border-top:1px solid var(--line);white-space:pre-wrap;color:var(--ink-dim)}
+  #runout .err{color:var(--warn)}
+  form#composer{display:flex;gap:10px;padding:12px 22px 18px;border-top:1px solid var(--line)}
+  #msg{flex:1;background:var(--panel);border:1px solid var(--line);color:var(--ink);
+       padding:10px 13px;font:15px var(--sans);border-radius:3px;resize:none;height:44px}
+  #msg:focus{outline:none;border-color:var(--brass-dim)}
+</style>
+</head>
+<body>
+<aside>
+  <h1>Mentor</h1>
+  <button id="newbtn" class="primary">＋ New subject</button>
+  <div id="newform">
+    <label>What do you want to learn?</label>
+    <input id="nf-topic" placeholder="e.g. Python, electronics, algebra">
+    <label>Where are you starting from?</label>
+    <select id="nf-level">
+      <option value="complete beginner">Complete beginner</option>
+      <option value="some basics">Know some basics</option>
+      <option value="intermediate">Intermediate</option>
+      <option value="advanced">Advanced</option>
+    </select>
+    <label>Is this a coding subject?</label>
+    <select id="nf-lang">
+      <option value="">No — just studying</option>
+      <option value="python">Yes — Python practice</option>
+      <option value="javascript">Yes — JavaScript practice</option>
+      <option value="other">Yes — other (review only)</option>
+    </select>
+    <button id="nf-go" class="primary">Begin</button>
+  </div>
+  <div id="sessions"><div class="empty">Nothing yet. Pick a subject — any subject.</div></div>
+</aside>
+
+<main>
+  <div id="head">
+    <span id="topic">Pick a subject to begin</span>
+    <span id="meta"></span>
+  </div>
+  <div id="actions">
+    <button id="teach" disabled>Teach me the next thing</button>
+    <button id="quiz" disabled>Quiz me</button>
+    <button id="exercise" disabled>Give me an exercise</button>
+    <button id="benchtoggle" disabled hidden>Code bench</button>
+    <button id="speaklessons" title="Have the lesson read aloud">🔇 Speak lessons</button>
+  </div>
+  <div id="log">
+    <div class="turn mentor"><div class="who">Mentor</div>
+    <div class="body">Start a subject on the left — anything you want to understand. I will teach it one piece at a time, check that it stuck, and remember where we left off.</div></div>
+  </div>
+  <div id="thinking">considering…</div>
+  <div id="bench">
+    <div id="benchbar">
+      <span class="lbl">Practice bench — <span id="benchlang"></span></span>
+      <button id="run">▶ Run</button>
+      <button id="review">Submit for review</button>
+    </div>
+    <textarea id="code" spellcheck="false" placeholder="# write your attempt here, then Run"></textarea>
+    <div id="runout"></div>
+  </div>
+  <form id="composer">
+    <textarea id="msg" placeholder="Ask anything, or answer the question…"></textarea>
+    <button id="send" type="submit" class="primary">Send</button>
+  </form>
+</main>
+
+<script>
+// Mentor v2. Alfred wearing a teaching hat — same brain via /api/chat, but
+// this app carries the study state he cannot: which subject, your level,
+// what has been covered, what needs review. That state rides inside every
+// prompt, so lessons pick up where they left off.
+let state = {sessions: [], active: null};
+let running = false;
+let speakLessons = false;
+
+async function speakAloud(text){
+  if (!speakLessons || !text) return;
+  try {
+    const r = await fetch('/api/tts', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({text})});
+    if (r.ok) new Audio(URL.createObjectURL(await r.blob())).play();
+    else {
+      const d = await r.json();
+      turn('Mentor', 'My voice is not set up on the core yet: ' + (d.hint || d.error));
+      speakLessons = false; syncSpeakBtn();
+    }
+  } catch (e) {}
+}
+function syncSpeakBtn(){
+  const b = document.getElementById('speaklessons');
+  b.textContent = (speakLessons ? '🔊' : '🔇') + ' Speak lessons';
+}
+
+const TEACHER = (s) =>
+  '[Mentor — study session]\n'+
+  'You are teaching one student, patiently. Subject: ' + s.topic + '. '+
+  "Student's level: " + s.level + '.' + (s.lang ? ' Practice language: ' + s.lang + '.' : '') + '\n'+
+  'Rules: plain language anyone can follow; ONE idea at a time; a concrete '+
+  'example for every idea; end by checking understanding with one short '+
+  'question. If the student struggles, slow down and re-explain differently '+
+  '- never plough on. No jargon without defining it first.\n'+
+  (s.notes.length ? 'Progress so far: ' + s.notes.slice(-8).map(n=>n.text).join('; ') + '\n' : '');
+
+function activeSession(){ return state.sessions.find(x => x.id === state.active) || null; }
+
+async function load(){
+  try{
+    const d = await (await fetch('/api/appdata/mentor')).json();
+    if (d && d.sessions) state = d;
+  }catch(e){}
+}
+let saveTimer;
+function save(){
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => fetch('/api/appdata/mentor', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(state)}).catch(()=>{}), 400);
+}
+
+const log = document.getElementById('log');
+function turn(who, text){
+  const el = document.createElement('div');
+  el.className = 'turn ' + (who === 'Mentor' ? 'mentor' : 'you');
+  el.innerHTML = '<div class="who"></div><div class="body"></div>';
+  el.querySelector('.who').textContent = who;
+  el.querySelector('.body').textContent = text;
+  log.appendChild(el); log.scrollTop = log.scrollHeight;
+}
+function setBusy(b){
+  running = b;
+  document.getElementById('thinking').classList.toggle('on', b);
+  const s = activeSession();
+  for (const id of ['teach','quiz','exercise'])
+    document.getElementById(id).disabled = b || !s;
+  for (const id of ['send','run','review'])
+    document.getElementById(id).disabled = b;
+}
+
+async function ask(action, userShown){
+  const s = activeSession(); if (!s || running) return;
+  if (userShown) turn('You', userShown);
+  const recent = s.history.slice(-8).map(h => h.who + ': ' + h.text).join('\n');
+  const framed = TEACHER(s) + (recent ? 'Recent lesson:\n' + recent + '\n\n' : '') + action;
+  setBusy(true);
+  try{
+    const r = await fetch('/api/chat', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({message: framed})});
+    const d = await r.json();
+    const reply = d.reply || ('Something went wrong: ' + (d.error || 'unknown'));
+    turn('Mentor', reply);
+    speakAloud(reply);
+    if (userShown) s.history.push({who:'Student', text:userShown});
+    s.history.push({who:'Mentor', text: reply.slice(0, 600)});
+    s.history = s.history.slice(-16);
+    save();
+  }catch(err){ turn('Mentor', 'I could not reach my own core: ' + err.message); }
+  finally{ setBusy(false); }
+}
+
+document.getElementById('teach').onclick = () =>
+  ask('Teach the next thing the student should learn. One idea, one example, one check question.');
+document.getElementById('quiz').onclick = () =>
+  ask('Give a short quiz: three questions on what has been covered so far, easiest first. Do not give the answers yet.');
+document.getElementById('exercise').onclick = () => {
+  const s = activeSession();
+  ask(s.lang && s.lang !== 'other'
+    ? 'Set one small ' + s.lang + ' coding exercise on the current topic - solvable in under 15 lines. State exactly what the program should do and what output to expect. Do not give the solution.'
+    : 'Set one practice exercise on the current topic that the student can do right now. Do not give the solution yet.');
+};
+
+document.getElementById('composer').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const text = document.getElementById('msg').value.trim(); if (!text) return;
+  document.getElementById('msg').value = '';
+  const s = activeSession();
+  if (!s){ turn('Mentor', 'Pick or start a subject first - the left rail.'); return; }
+  ask('The student says: ' + text + '\nRespond as their teacher: if it answers your check question, say honestly whether it is right and why; then continue.', text);
+});
+document.getElementById('msg').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault();
+    document.getElementById('composer').requestSubmit(); }
+});
+
+document.getElementById('newbtn').onclick = () =>
+  document.getElementById('newform').classList.toggle('on');
+document.getElementById('nf-go').onclick = () => {
+  const topic = document.getElementById('nf-topic').value.trim();
+  if (!topic) return;
+  const s = {
+    id: 's' + Date.now().toString(36), topic,
+    level: document.getElementById('nf-level').value,
+    lang: document.getElementById('nf-lang').value,
+    history: [], notes: [], started: Date.now(),
+  };
+  state.sessions.push(s); state.active = s.id;
+  document.getElementById('newform').classList.remove('on');
+  document.getElementById('nf-topic').value = '';
+  save(); render();
+  ask('This is our first lesson. Briefly ask what the student hopes to do with ' + topic +
+      ', then teach the very first thing a ' + s.level + ' should know. One idea, one example, one check question.');
+};
+
+function switchTo(id){ state.active = id; save(); render(); }
+function removeSession(id, ev){
+  ev.stopPropagation();
+  state.sessions = state.sessions.filter(s => s.id !== id);
+  if (state.active === id) state.active = (state.sessions[0] || {}).id || null;
+  save(); render();
+}
+
+function render(){
+  const box = document.getElementById('sessions'); box.replaceChildren();
+  if (!state.sessions.length)
+    box.innerHTML = '<div class="empty">Nothing yet. Pick a subject - any subject.</div>';
+  for (const s of state.sessions){
+    const el = document.createElement('div');
+    el.className = 'sess' + (s.id === state.active ? ' on' : '');
+    el.innerHTML = '<span class="del">✕</span><div class="t"></div><div class="m"></div>';
+    el.querySelector('.t').textContent = s.topic;
+    el.querySelector('.m').textContent = s.level + (s.lang ? ' · ' + s.lang : '');
+    el.onclick = () => switchTo(s.id);
+    el.querySelector('.del').onclick = (ev) => removeSession(s.id, ev);
+    box.appendChild(el);
+  }
+  const s = activeSession();
+  document.getElementById('topic').textContent = s ? s.topic : 'Pick a subject to begin';
+  document.getElementById('meta').textContent = s ? (s.level + (s.lang ? ' · ' + s.lang : '')) : '';
+  for (const id of ['teach','quiz','exercise']) document.getElementById(id).disabled = !s;
+  const codey = s && (s.lang === 'python' || s.lang === 'javascript');
+  const bt = document.getElementById('benchtoggle');
+  bt.hidden = !codey; bt.disabled = !codey;
+  if (!codey) document.getElementById('bench').classList.remove('on');
+  if (codey) document.getElementById('benchlang').textContent = s.lang;
+}
+document.getElementById('benchtoggle').onclick = () =>
+  document.getElementById('bench').classList.toggle('on');
+document.getElementById('speaklessons').onclick = () => {
+  speakLessons = !speakLessons; syncSpeakBtn();
+  if (speakLessons) speakAloud('Very well. I will talk you through it.');
+};
+
+// The practice bench: real execution, because "looks right" is not a grade.
+// JavaScript runs in a throwaway sandboxed Worker with a hard timeout.
+// Python runs in Pyodide (WebAssembly) - fetched once, then browser-cached.
+const out = document.getElementById('runout');
+function show(text, isErr){
+  out.innerHTML = '';
+  const span = document.createElement('span');
+  if (isErr) span.className = 'err';
+  span.textContent = text || '(no output)';
+  out.appendChild(span);
+}
+
+function runJS(code){
+  return new Promise((resolve) => {
+    const src =
+      'const lines = [];\n' +
+      'console.log = (...a) => lines.push(a.map(x => typeof x === "object" ? JSON.stringify(x) : String(x)).join(" "));\n' +
+      'try { ' + '\n' + code + '\n' +
+      '; postMessage({ok: true, out: lines.join("\\n")}); }\n' +
+      'catch (e) { postMessage({ok: false, out: lines.join("\\n"), err: String(e)}); }';
+    const worker = new Worker(URL.createObjectURL(new Blob([src], {type: 'text/javascript'})));
+    const timer = setTimeout(() => { worker.terminate(); resolve({ok:false, err:'timed out after 3s (infinite loop?)', out:''}); }, 3000);
+    worker.onmessage = (e) => { clearTimeout(timer); worker.terminate(); resolve(e.data); };
+    worker.onerror = (e) => { clearTimeout(timer); worker.terminate(); resolve({ok:false, err:e.message, out:''}); };
+  });
+}
+
+let pyodide = null;
+async function runPy(code){
+  if (!pyodide){
+    show('Loading Python (first time only - needs the internet)...');
+    try{
+      await new Promise((res, rej) => {
+        const sc = document.createElement('script');
+        sc.src = 'https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js';
+        sc.onload = res; sc.onerror = () => rej(new Error('could not fetch Pyodide'));
+        document.head.appendChild(sc);
+      });
+      pyodide = await loadPyodide();
+    }catch(e){ return {ok:false, err:'Python runtime unavailable: ' + e.message, out:''}; }
+  }
+  try{
+    pyodide.runPython('import sys, io\nsys.stdout = io.StringIO()\nsys.stderr = sys.stdout');
+    await pyodide.runPythonAsync(code);
+    return {ok:true, out: pyodide.runPython('sys.stdout.getvalue()')};
+  }catch(e){
+    let printed = '';
+    try{ printed = pyodide.runPython('sys.stdout.getvalue()'); }catch(_){}
+    return {ok:false, out: printed, err: String(e).split('\n').slice(-3).join('\n')};
+  }
+}
+
+let lastRun = null;
+document.getElementById('run').onclick = async () => {
+  const s = activeSession(); if (!s) return;
+  const code = document.getElementById('code').value;
+  if (!code.trim()){ show('Nothing to run yet.'); return; }
+  show('Running...');
+  const r = s.lang === 'python' ? await runPy(code) : await runJS(code);
+  lastRun = {code: code, ok: r.ok, out: r.out, err: r.err};
+  show((r.out || '') + (r.err ? '\n' + r.err : ''), !r.ok);
+};
+
+document.getElementById('review').onclick = () => {
+  const s = activeSession(); if (!s) return;
+  const code = document.getElementById('code').value.trim();
+  if (!code){ turn('Mentor', 'Write an attempt in the bench first, then submit it.'); return; }
+  const ran = lastRun && lastRun.code === code
+    ? 'When run it ' + (lastRun.ok ? 'produced this output' : 'FAILED with this error') + ':\n' +
+      (lastRun.out || '') + (lastRun.err ? '\n' + lastRun.err : '')
+    : 'The student has not run this version yet.';
+  ask('Review the student\'s ' + s.lang + ' attempt at the exercise.\n\nTheir code:\n' + code +
+      '\n\n' + ran + '\n\n' +
+      'As their teacher: say what is right first, then the ONE most important thing to fix and why. ' +
+      'If it is fully correct, say so plainly, note what they have now mastered, and offer a slightly harder follow-up.',
+      '(submitted my attempt from the bench)');
+  s.notes.push({text: 'attempted an exercise (' + new Date().toLocaleDateString() + ')', kind:'practice'});
+  s.notes = s.notes.slice(-30); save();
+};
+
+load().then(() => { render(); });
+</script>
+</body>
+</html>

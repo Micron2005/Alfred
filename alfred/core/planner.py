@@ -167,6 +167,9 @@ def verify(task: Task, result: TaskResult) -> tuple[bool, str]:
     exists, use the real check. Where none exists, say so plainly and let
     Alfred read the artifact himself.
     """
+    if result.status == "pending" and task.capability == "os.apply":
+        return True, "parked for the owner's approval"
+
     if not result.ok:
         return False, result.error or "worker reported failure"
 

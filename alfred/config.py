@@ -70,6 +70,16 @@ def load(path: str | os.PathLike | None = None) -> dict:
 
     for key in ("state_db", "artifact_dir"):
         cfg["core"][key] = str(Path(cfg["core"][key]).expanduser())
-    Path(cfg["core"]["artifact_dir"]).mkdir(parents=True, exist_ok=True)
+    try:
+        Path(cfg["core"]["artifact_dir"]).mkdir(parents=True, exist_ok=True)
+    except (PermissionError, OSError) as exc:
+        # Typically /mnt/alfred referenced before the NFS mount exists.
+        # Fall back to a local dir and keep going — a missing shared mount
+        # should degrade artifact sharing, not prevent Alfred from starting.
+        fallback = Path("~/.alfred/artifacts").expanduser()
+        print(f"warning: cannot use artifact_dir {cfg['core']['artifact_dir']} "
+              f"({exc}); using {fallback} instead")
+        cfg["core"]["artifact_dir"] = str(fallback)
+        fallback.mkdir(parents=True, exist_ok=True)
     Path(cfg["core"]["state_db"]).parent.mkdir(parents=True, exist_ok=True)
     return cfg

@@ -1,0 +1,8 @@
+{
+  "name": "Browser",
+  "icon": "◎",
+  "version": "1.0",
+  "external": true,
+  "href": "https://duckduckgo.com",
+  "note": "Opens the real browser — Micron OS is the machine, so the browser is already inside it. Change href to any start page you like."
+}

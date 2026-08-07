@@ -39,7 +39,10 @@ class Alfred:
         self.state = State(cfg["core"]["state_db"])
         self.persona = PERSONA_PATH.read_text() if PERSONA_PATH.exists() else ""
         self.local_worker_id: str = cfg["worker"]["id"]
-        self.history: list[tuple[str, str]] = []
+        # Conversation survives restarts: the last turns reload so a
+        # service restart or self-update does not wipe the thread.
+        self.history: list[tuple[str, str]] = list(self.state.recent_turns(6))
+        self._bg_tasks: set = set()   # background learners, kept referenced
 
     # ---- dispatch --------------------------------------------------------
 
@@ -47,6 +50,20 @@ class Alfred:
         """Submit, wait, retry, and let the local worker take over if nobody
         else does. The fallback is not a special path — the desktop's own
         worker claims from the same queue as everyone else, just later."""
+        # OS changes never run on Alfred's judgment. Park them; the owner's
+        # approval (shell button or /approve) is what dispatches them.
+        if task.capability == "os.apply" and not task.inputs.get("_approved"):
+            from alfred.worker.handlers.oscontrol import describe_action
+            description = describe_action(
+                str(task.inputs.get("action", "?")), task.inputs.get("args") or {})
+            action_id = self.state.park_action(
+                task.project_id, description, task.to_json())
+            return TaskResult(
+                task_id=task.id, worker_id="owner-approval", status="pending",
+                summary=f"'{description}' is queued as pending change #{action_id}, "
+                        "awaiting your approval.",
+            )
+
         while True:
             self.state.enqueue(task)
             # The lease is what lets the supervisor notice an abandoned task.
@@ -57,18 +74,20 @@ class Alfred:
 
             waited = 0.0
             result: TaskResult | None = None
+            fallback_announced = False
             while waited < task.timeout_s:
                 result = await self.bus.await_result(task.id, timeout=5.0)
                 if result is not None:
                     break
                 waited += 5.0
                 workers = await self.bus.workers()
-                if scheduler.should_run_locally(
+                if not fallback_announced and scheduler.should_run_locally(
                     task, workers, self.local_worker_id,
                     waited, self.cfg["core"]["fallback_after_s"],
                 ):
-                    log.info("no remote worker for %s; the desktop will take it",
+                    log.info("no remote worker for %s; the local worker will take it",
                              task.capability)
+                    fallback_announced = True
 
             if result is not None:
                 self.state.finish(task.id, result.status, result.summary, result.error or "")
@@ -140,24 +159,104 @@ class Alfred:
                     available.add(cap)
         return sorted(available)
 
-    async def converse(self, message: str, project_id: str | None = None) -> str:
+    ATTACH_ROUTES = (
+        ({".png",".jpg",".jpeg",".webp",".gif",".bmp"}, "vision.describe", 240),
+        ({".mp4",".mov",".mkv",".webm",".avi",".m4v"}, "media.video", 600),
+        ({".pdf",".txt",".md"}, "research.document", 300),
+    )
+
+    def _attachment_tasks(self, attachments: list[str], message: str,
+                          available: set[str] | None = None) -> list[Task]:
+        """Files the user showed him. Routed by type, deterministically — a
+        7B planner should never be between an uploaded image and the vision
+        model. When the preferred capability is not offered anywhere on the
+        network (no vision model yet), the file degrades honestly to
+        media.inspect rather than dispatching into a void."""
+        tasks = []
+        for raw in attachments:
+            path = str(raw)
+            ext = ("." + path.rsplit(".", 1)[-1].lower()) if "." in path else ""
+            for exts, capability, timeout in self.ATTACH_ROUTES:
+                if ext in exts and (available is None or capability in available):
+                    inputs = ({"paths": [path]} if capability == "research.document"
+                              else {"path": path, "question": message})
+                    tasks.append(Task(capability=capability, prompt=message,
+                                      inputs=inputs, timeout_s=timeout))
+                    break
+            else:
+                tasks.append(Task(capability="media.inspect", prompt=message,
+                                  inputs={"path": path}, timeout_s=120))
+        return tasks
+
+    def _owner_briefing(self) -> str:
+        """What Alfred currently knows about his employer. The fresh-start
+        persona promises he learns you over time; this is where that memory
+        actually enters his context."""
+        facts = self.state.known_facts("owner")
+        if not facts:
+            return ""
+        lines = []
+        for f in facts:
+            label = f["key"].replace("_", " ")
+            tag = " (inferred)" if f["confidence"] == "inferred" else ""
+            lines.append(f"  - {label}: {f['value']}{tag}")
+        return ("What you know about your employer (learned over time; use "
+                "it naturally, do not recite it):\n" + "\n".join(lines))
+
+    # Verbs and nouns that signal real work worth planning for. The gate
+    # errs toward planning: a false 'yes' costs one wasted planner call, a
+    # false 'no' would drop a real task — so the bar to skip is high.
+    _WORK_HINTS = (
+        "calculate", "compute", "design", "model", "cad", "measure",
+        "write code", "script", "program", "build", "generate",
+        "research", "look up", "search", "find out", "analyze", "analyse",
+        "install", "update", "upgrade", "restart", "service", "package",
+        "observe", "check the", "disk", "memory", "read the", "document",
+        "torque", "stress", "load", "bracket", "gear", "motor", "simulate",
+    )
+
+    def _might_need_work(self, message: str) -> bool:
+        m = message.lower().strip()
+        if len(m) < 4:
+            return False
+        return any(h in m for h in self._WORK_HINTS)
+
+    async def converse(self, message: str, project_id: str | None = None,
+                       attachments: list[str] | None = None) -> str:
         briefing = self.state.briefing(project_id) if project_id else ""
+        owner = self._owner_briefing()
+        if owner:
+            briefing = (owner + "\n\n" + briefing) if briefing else owner
 
         # Anything the supervisor noticed while you were away.
         pending = self.state.undelivered()
         if pending:
-            briefing += "\n\nSince we last spoke:\n" + "\n".join(
-                f"  - {n['body']}" for n in pending)
+            briefing += (
+                "\n\nBackground notices (mention at most briefly, and only if "
+                "relevant to what the user is saying — never as the main topic "
+                "of your reply):\n"
+                + "\n".join(f"  - {n['body']}" for n in pending)
+            )
 
-        tasks = await planner.plan(
-            message, briefing, self.cfg, project_id,
-            available=await self._network_capabilities(),
-        )
+        if attachments:
+            tasks = self._attachment_tasks(
+                attachments, message, available=await self._network_capabilities())
+        elif self._might_need_work(message):
+            # Only consult the planner when the message plausibly asks for
+            # something a worker does. Plain conversation skips it entirely
+            # and answers in one LLM call instead of two.
+            tasks = await planner.plan(
+                message, briefing, self.cfg, project_id,
+                available=await self._network_capabilities(),
+            )
+        else:
+            tasks = []
 
         if not tasks:
             # Nothing worth delegating. Answer directly.
             reply = await self._speak(message, briefing, [])
             self._remember(message, reply, pending)
+            self._learn_in_background(message)
             return reply
 
         log.info("plan: %d tasks across %s", len(tasks),
@@ -176,6 +275,7 @@ class Alfred:
 
         reply = await self._speak(message, briefing, checked)
         self._remember(message, reply, pending)
+        self._learn_in_background(message)
         return reply
 
     async def _speak(self, message: str, briefing: str, findings: list[str]) -> str:
@@ -198,7 +298,55 @@ class Alfred:
     def _remember(self, message: str, reply: str, delivered: list[dict]) -> None:
         self.history.append(("User", message))
         self.history.append(("Alfred", reply))
+        self.history = self.history[-12:]
+        self.state.log_turn("User", message)
+        self.state.log_turn("Alfred", reply)
         self.state.mark_delivered([n["id"] for n in delivered])
+
+    def _learn_in_background(self, message: str) -> None:
+        async def _run():
+            try:
+                await self._learn_from(message)
+            except Exception:
+                pass  # a missed fact is fine; never disturb the reply
+        task = asyncio.ensure_future(_run())
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
+    async def _learn_from(self, message: str) -> None:
+        """Notice durable facts the owner stated about himself and file
+        them. Conservative on purpose: clear, lasting facts only — a name,
+        a preference, a constraint — never a passing mood. A miss is fine;
+        a false memory is not. Explicit forget is honoured directly."""
+        text = message.strip()
+        low = text.lower()
+        if low.startswith(("forget ", "forget that ")):
+            what = text.split(" ", 1)[1].strip().rstrip(".").lower()
+            for f in self.state.known_facts("owner"):
+                if f["key"].replace("_", " ") in what or f["value"].lower() in what:
+                    self.state.forget(f["key"])
+            return
+        schema = (
+            "Extract only durable facts the user stated about THEMSELVES that "
+            "a butler should remember long-term: name or preferred form of "
+            "address, stable preferences, standing constraints, key "
+            "relationships, recurring context. Ignore anything transient, "
+            "hypothetical, about the world rather than the user, or already "
+            "obvious. Return strict JSON "
+            "{\"facts\":[{\"key\":\"snake_case\",\"value\":\"short\","
+            "\"confidence\":\"stated|inferred\"}]} with an empty list if "
+            "nothing qualifies. User message: \"" + text[:600] + "\""
+        )
+        try:
+            data = await llm.complete_json(schema, self.cfg, timeout=60)
+        except Exception:
+            return
+        for fact in (data or {}).get("facts", [])[:3]:
+            key = str(fact.get("key", "")).strip()
+            value = str(fact.get("value", "")).strip()
+            if key and value and len(value) < 200:
+                self.state.learn(key, value, source=text[:200],
+                                 confidence=fact.get("confidence", "stated"))
 
     # ---- enrollment ------------------------------------------------------
 
@@ -239,6 +387,25 @@ class Alfred:
         if bad:
             message += f" (declined: {'; '.join(bad)})"
         return message
+
+    # ---- owner approval gate ---------------------------------------------
+
+    async def approve_action(self, action_id: int) -> str:
+        row = self.state.take_action(action_id)   # atomic; double-click safe
+        if row is None:
+            return f"pending change #{action_id} is not awaiting approval"
+        task = Task.from_json(row["task_json"])
+        task.inputs["_approved"] = True           # the mark only this path sets
+        result = await self._dispatch(task)
+        self.state.settle_action(action_id, result.ok, result.summary or result.error or "")
+        outcome = result.summary if result.ok else f"failed: {result.error}"
+        self.state.notice("os_change", f"Change #{action_id}: {outcome}", row["project_id"])
+        return outcome
+
+    def decline_action(self, action_id: int) -> str:
+        if self.state.decline_action(action_id):
+            return f"declined pending change #{action_id}"
+        return f"pending change #{action_id} is not awaiting approval"
 
     # ---- supervisor loop -------------------------------------------------
 

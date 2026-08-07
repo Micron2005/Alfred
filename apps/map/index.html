@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Map — Micron OS</title>
+<!-- Tiles: OpenFreeMap (free, no key). The map needs the internet;
+     your pins never leave this machine — they live in Micron OS appdata. -->
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+<style>
+  :root{
+    --cave:#0A0E14; --panel:#10161F; --line:#1C2633; --line-bright:#2A3A4F;
+    --ink:#C9D4E3; --ink-dim:#6B7A8F; --brass:#C8A24A; --brass-dim:#8A7239;
+    --mono:ui-monospace,'Cascadia Mono',Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,'Segoe UI',sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font:14px/1.5 var(--sans);color:var(--ink);background:var(--cave);display:flex}
+  #map{flex:1}  /* dim is applied by theme (applyDim) */
+  .maplibregl-ctrl-attrib{background:rgba(10,14,20,.7)!important;color:var(--ink-dim)!important}
+  .maplibregl-ctrl-attrib a{color:var(--ink-dim)!important}
+
+  /* ---- rail ---- */
+  aside{width:252px;background:var(--panel);border-right:1px solid var(--line);
+        display:flex;flex-direction:column;padding:14px;gap:12px;overflow-y:auto}
+  h1{font-family:var(--mono);font-size:12px;letter-spacing:.24em;color:var(--brass);
+     text-transform:uppercase;font-weight:400}
+  h2{font-family:var(--mono);font-size:10px;letter-spacing:.2em;color:var(--ink-dim);
+     text-transform:uppercase;font-weight:400;margin-top:4px}
+  button{background:none;border:1px solid var(--line-bright);color:var(--ink);
+         font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+         padding:7px 10px;border-radius:3px;cursor:pointer}
+  button:hover{border-color:var(--brass-dim);color:var(--brass)}
+  button.armed{border-color:var(--brass);color:var(--brass)}
+  .row{display:flex;gap:6px}
+  .row button{flex:1}
+
+  .cat{display:flex;align-items:center;gap:8px;padding:5px 6px;border-radius:3px;
+       cursor:pointer;user-select:none}
+  .cat:hover{background:var(--cave)}
+  .cat .dot{width:10px;height:10px;border-radius:50%;flex:none}
+  .cat .n{flex:1;font-size:13px}
+  .cat .count{font-family:var(--mono);font-size:11px;color:var(--ink-dim)}
+  .cat.off{opacity:.35}
+
+  .pin-item{border-left:2px solid var(--line-bright);padding:4px 8px;margin:2px 0;
+            font-size:12.5px;cursor:pointer}
+  .pin-item:hover{border-color:var(--brass)}
+  .pin-item .where{font-family:var(--mono);font-size:10px;color:var(--ink-dim)}
+  .empty{font-size:12px;color:var(--ink-dim);font-style:italic}
+
+  /* ---- pin form (appears on marked click) ---- */
+  #form{position:fixed;z-index:30;background:var(--panel);border:1px solid var(--brass-dim);
+        border-radius:4px;padding:12px;width:240px;display:none;box-shadow:0 8px 30px rgba(0,0,0,.5)}
+  #form.on{display:block}
+  #form input,#form select,#form textarea{width:100%;background:var(--cave);
+        border:1px solid var(--line);color:var(--ink);padding:7px 8px;font:13px var(--sans);
+        border-radius:3px;margin-bottom:8px}
+  #form textarea{resize:vertical;min-height:52px}
+  #form input:focus,#form select:focus,#form textarea:focus{outline:none;border-color:var(--brass-dim)}
+
+  /* map popups in house style */
+  .maplibregl-popup-content{background:var(--panel)!important;color:var(--ink)!important;
+        border:1px solid var(--line-bright);border-radius:4px;font:13px var(--sans);
+        padding:10px 12px!important}
+  .maplibregl-popup-tip{border-top-color:var(--line-bright)!important;
+        border-bottom-color:var(--line-bright)!important}
+  .pp-title{font-weight:600;margin-bottom:2px}
+  .pp-cat{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+          margin-bottom:6px}
+  .pp-note{color:var(--ink-dim);white-space:pre-wrap;margin-bottom:8px}
+  .pp-del{font-family:var(--mono);font-size:10px;color:var(--ink-dim);cursor:pointer;
+          text-decoration:underline}
+  .pp-del:hover{color:var(--brass)}
+  .marker{width:16px;height:16px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);
+          border:2px solid rgba(10,14,20,.9);cursor:pointer;box-shadow:0 1px 6px rgba(0,0,0,.6)}
+</style>
+</head>
+<body>
+<aside>
+  <h1>Map</h1>
+  <div class="row">
+    <button id="mode2d" class="armed">2D</button>
+    <button id="mode3d">3D</button>
+  </div>
+  <div class="row">
+    <button id="theme-dark" class="armed" title="Dark map">Dark</button>
+    <button id="theme-night" title="Darkest map">Night</button>
+    <button id="theme-light" title="Light map">Light</button>
+  </div>
+  <div class="row">
+    <button id="mark" title="Then click the map to place a pin">＋ Mark</button>
+    <button id="locate" title="Center on this machine's location">◎ Here</button>
+  </div>
+
+  <h2>Categories <span style="float:right;cursor:pointer" id="addcat" title="New category">＋</span></h2>
+  <div id="cats"></div>
+
+  <h2>Marks</h2>
+  <div id="pins"><div class="empty">Nothing marked yet. Arm ＋ Mark and click the map.</div></div>
+</aside>
+
+<div id="map" role="application" aria-label="Interactive map"></div>
+
+<div id="form">
+  <input id="f-title" placeholder="What is this place?">
+  <select id="f-cat"></select>
+  <textarea id="f-note" placeholder="Why it matters (optional)"></textarea>
+  <div class="row">
+    <button id="f-save">Save</button>
+    <button id="f-cancel">Cancel</button>
+  </div>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// State: everything lives on Micron OS via /api/appdata/map. Tiles come from
+// the internet; your marks never do.
+// ---------------------------------------------------------------------------
+const DEFAULT_CATS = [
+  {id:'base',    name:'Base',     color:'#C8A24A'},
+  {id:'contact', name:'Contact',  color:'#4FA3B8'},
+  {id:'interest',name:'Interest', color:'#8F9BB8'},
+  {id:'supply',  name:'Supply',   color:'#6FA86F'},
+  {id:'caution', name:'Caution',  color:'#B85C4F'},
+];
+const STYLES = {
+  dark:  'https://tiles.openfreemap.org/styles/dark',
+  night: 'https://tiles.openfreemap.org/styles/dark',   // dark + heavier dim, applied via CSS filter
+  light: 'https://tiles.openfreemap.org/styles/liberty',
+};
+let state = {cats: DEFAULT_CATS, pins: [], hidden: [], view: null, theme: 'dark'};
+let markers = {};      // pin id -> maplibregl.Marker
+let arming = false;    // ＋ Mark armed
+let pendingLngLat = null;
+
+async function load(){
+  try{
+    const r = await fetch('/api/appdata/map');
+    const d = await r.json();
+    if (d && d.cats) state = Object.assign(state, d);
+  }catch(e){}
+}
+let saveTimer = null;
+function save(){
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => fetch('/api/appdata/map', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(state)
+  }).catch(()=>{}), 400);
+}
+
+// ---------------------------------------------------------------------------
+// Map
+// ---------------------------------------------------------------------------
+let map;
+function boot(){
+  map = new maplibregl.Map({
+    container:'map',
+    style: STYLES[state.theme || 'dark'],
+    center: state.view ? state.view.center : [0, 25],
+    zoom:   state.view ? state.view.zoom   : 2,
+    pitch:  state.view ? state.view.pitch  : 0,
+    bearing:state.view ? state.view.bearing: 0,
+    attributionControl: {compact:true},
+  });
+  map.addControl(new maplibregl.NavigationControl({visualizePitch:true}), 'top-right');
+  map.on('moveend', () => {
+    state.view = {center:[map.getCenter().lng, map.getCenter().lat],
+                  zoom:map.getZoom(), pitch:map.getPitch(), bearing:map.getBearing()};
+    save();
+  });
+  map.on('click', (e) => {
+    if (!arming) return;
+    pendingLngLat = e.lngLat;
+    const form = document.getElementById('form');
+    form.style.left = Math.min(e.point.x + 260, innerWidth - 260) + 'px';
+    form.style.top  = Math.min(e.point.y + 8, innerHeight - 240) + 'px';
+    form.classList.add('on');
+    document.getElementById('f-title').focus();
+  });
+  renderAll();
+  for (const t of ['dark','night','light'])
+    document.getElementById('theme-' + t).classList.toggle('armed', t === (state.theme||'dark'));
+  applyDim();
+}
+
+function setMode(three){
+  map.easeTo({pitch: three ? 60 : 0, duration: 700});
+  document.getElementById('mode3d').classList.toggle('armed', three);
+  document.getElementById('mode2d').classList.toggle('armed', !three);
+}
+document.getElementById('mode2d').onclick = () => setMode(false);
+document.getElementById('mode3d').onclick = () => setMode(true);
+
+function applyDim(){
+  const map = document.getElementById('map');
+  map.style.filter = state.theme === 'night'
+    ? 'saturate(.6) brightness(.62)'
+    : (state.theme === 'light' ? 'saturate(.85) brightness(.98)' : 'saturate(.8) brightness(.82)');
+}
+function setTheme(name){
+  state.theme = name; save();
+  for (const t of ['dark','night','light'])
+    document.getElementById('theme-' + t).classList.toggle('armed', t === name);
+  // re-apply the style; markers re-add on styledata
+  map.setStyle(STYLES[name]);
+  map.once('styledata', () => { renderAll(); applyDim(); });
+  applyDim();
+}
+document.getElementById('theme-dark').onclick = () => setTheme('dark');
+document.getElementById('theme-night').onclick = () => setTheme('night');
+document.getElementById('theme-light').onclick = () => setTheme('light');
+
+document.getElementById('mark').onclick = (e) => {
+  arming = !arming;
+  e.target.classList.toggle('armed', arming);
+  map.getCanvas().style.cursor = arming ? 'crosshair' : '';
+};
+document.getElementById('locate').onclick = () => {
+  navigator.geolocation && navigator.geolocation.getCurrentPosition(
+    p => map.easeTo({center:[p.coords.longitude, p.coords.latitude], zoom:14}),
+    () => {});
+};
+
+// ---------------------------------------------------------------------------
+// Pins
+// ---------------------------------------------------------------------------
+function catOf(pin){ return state.cats.find(c => c.id === pin.cat) || state.cats[0]; }
+
+function makeMarker(pin){
+  const el = document.createElement('div');
+  el.className = 'marker';
+  el.style.background = catOf(pin).color;
+  const popup = new maplibregl.Popup({offset:18}).setHTML(
+    `<div class="pp-title">${esc(pin.title)}</div>`+
+    `<div class="pp-cat" style="color:${catOf(pin).color}">${esc(catOf(pin).name)}</div>`+
+    (pin.note ? `<div class="pp-note">${esc(pin.note)}</div>` : '')+
+    `<span class="pp-del" onclick="delPin('${pin.id}')">remove mark</span>`);
+  return new maplibregl.Marker({element: el, anchor:'bottom'})
+    .setLngLat([pin.lng, pin.lat]).setPopup(popup).addTo(map);
+}
+function esc(s){ const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
+
+window.delPin = (id) => {
+  state.pins = state.pins.filter(p => p.id !== id);
+  if (markers[id]){ markers[id].remove(); delete markers[id]; }
+  save(); renderAll();
+};
+
+document.getElementById('f-save').onclick = () => {
+  const title = document.getElementById('f-title').value.trim() || 'Unnamed';
+  const pin = {
+    id: 'p' + Date.now().toString(36),
+    title, cat: document.getElementById('f-cat').value,
+    note: document.getElementById('f-note').value.trim(),
+    lng: pendingLngLat.lng, lat: pendingLngLat.lat, at: Date.now(),
+  };
+  state.pins.push(pin); save();
+  closeForm(); renderAll();
+};
+document.getElementById('f-cancel').onclick = closeForm;
+function closeForm(){
+  document.getElementById('form').classList.remove('on');
+  document.getElementById('f-title').value = '';
+  document.getElementById('f-note').value = '';
+  arming = false;
+  document.getElementById('mark').classList.remove('armed');
+  map.getCanvas().style.cursor = '';
+}
+
+// ---------------------------------------------------------------------------
+// Categories: yours to define. A superhero's map has the categories the
+// superhero needs, not the ones a product manager shipped.
+// ---------------------------------------------------------------------------
+document.getElementById('addcat').onclick = () => {
+  // A small inline form with a real color picker — nobody should be asked
+  // to know hex codes to mark their own map.
+  if (document.getElementById('newcat')) return;
+  const row = document.createElement('div');
+  row.id = 'newcat'; row.style.cssText = 'display:flex;gap:6px;margin:6px 0;align-items:center';
+  row.innerHTML = `
+    <input id="nc-name" placeholder="Category name" style="flex:1;background:var(--cave);
+      border:1px solid var(--line);color:var(--ink);padding:6px 8px;border-radius:3px;font-size:13px">
+    <input id="nc-color" type="color" value="#AA55FF" style="width:34px;height:30px;padding:2px;
+      background:var(--cave);border:1px solid var(--line);border-radius:3px;cursor:pointer">
+    <button id="nc-ok" style="padding:6px 10px">✓</button>`;
+  document.getElementById('cats').prepend(row);
+  document.getElementById('nc-name').focus();
+  document.getElementById('nc-ok').onclick = () => {
+    const name = document.getElementById('nc-name').value.trim();
+    const color = document.getElementById('nc-color').value;
+    row.remove();
+    if (!name) return;
+    state.cats.push({id: 'c' + Date.now().toString(36), name, color});
+    save(); renderAll();
+  };
+};
+
+function renderAll(){
+  // category filter list
+  const cats = document.getElementById('cats'); cats.replaceChildren();
+  const sel = document.getElementById('f-cat'); sel.replaceChildren();
+  for (const c of state.cats){
+    const n = state.pins.filter(p => p.cat === c.id).length;
+    const el = document.createElement('div');
+    el.className = 'cat' + (state.hidden.includes(c.id) ? ' off' : '');
+    el.innerHTML = `<span class="dot" style="background:${c.color}"></span>`+
+                   `<span class="n">${esc(c.name)}</span><span class="count">${n}</span>`;
+    el.onclick = () => {
+      state.hidden = state.hidden.includes(c.id)
+        ? state.hidden.filter(x => x !== c.id) : [...state.hidden, c.id];
+      save(); renderAll();
+    };
+    cats.appendChild(el);
+    const opt = document.createElement('option');
+    opt.value = c.id; opt.textContent = c.name; sel.appendChild(opt);
+  }
+  // markers on the map, honoring filters
+  for (const id of Object.keys(markers)){ markers[id].remove(); delete markers[id]; }
+  for (const pin of state.pins){
+    if (!state.hidden.includes(pin.cat)) markers[pin.id] = makeMarker(pin);
+  }
+  // the marks list
+  const list = document.getElementById('pins'); list.replaceChildren();
+  if (!state.pins.length)
+    list.innerHTML = '<div class="empty">Nothing marked yet. Arm ＋ Mark and click the map.</div>';
+  for (const pin of [...state.pins].sort((a,b) => b.at - a.at)){
+    const el = document.createElement('div');
+    el.className = 'pin-item';
+    el.style.borderColor = catOf(pin).color;
+    el.innerHTML = `${esc(pin.title)}<div class="where">${pin.lat.toFixed(4)}, ${pin.lng.toFixed(4)}</div>`;
+    el.onclick = () => map.easeTo({center:[pin.lng, pin.lat], zoom:Math.max(map.getZoom(), 13)});
+    list.appendChild(el);
+  }
+}
+
+load().then(boot);
+</script>
+</body>
+</html>

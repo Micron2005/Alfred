@@ -22,6 +22,7 @@ log = logging.getLogger("alfred.handlers")
 
 Handler = Callable[[Task, dict], Awaitable[TaskResult]]
 _REGISTRY: dict[str, Handler] = {}
+_LOADED = False
 
 HANDLER_MODULES = [
     "alfred.worker.handlers.code",
@@ -30,6 +31,9 @@ HANDLER_MODULES = [
     "alfred.worker.handlers.hardware",
     "alfred.worker.handlers.cad_onshape",
     "alfred.worker.handlers.cad_freecad",
+    "alfred.worker.handlers.oscontrol",
+    "alfred.worker.handlers.media",
+    "alfred.worker.handlers.speech",
 ]
 
 
@@ -41,6 +45,14 @@ def handler(capability: str) -> Callable[[Handler], Handler]:
 
 
 def _load_all() -> None:
+    # A loaded FLAG, not an emptiness check. Direct imports of a single
+    # handler module (which the core does for describe_action) pre-fill the
+    # registry; deciding "already loaded" from non-emptiness would then skip
+    # every other module and silently strip the worker of its capabilities.
+    global _LOADED
+    if _LOADED:
+        return
+    _LOADED = True
     for module in HANDLER_MODULES:
         try:
             importlib.import_module(module)
@@ -49,14 +61,12 @@ def _load_all() -> None:
 
 
 def get_handler(capability: str) -> Handler | None:
-    if not _REGISTRY:
-        _load_all()
+    _load_all()
     return _REGISTRY.get(capability)
 
 
 def registered_capabilities() -> set[str]:
-    if not _REGISTRY:
-        _load_all()
+    _load_all()
     return set(_REGISTRY)
 
 

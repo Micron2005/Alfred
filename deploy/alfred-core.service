@@ -1,0 +1,20 @@
+# Micron OS v0 — Alfred as part of the operating system.
+# Install: deploy/install-alfredos.sh
+[Unit]
+Description=Alfred core (Micron OS shell server)
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/%i/alfred
+ExecStart=/usr/bin/python3 /home/%i/alfred/run_server.py --config configs/desktop.toml --host 0.0.0.0
+Restart=on-failure
+RestartSec=5
+# Chat inference can take minutes on CPU; do not let systemd mistake
+# patience for death.
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

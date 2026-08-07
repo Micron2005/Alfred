@@ -1,0 +1,28 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<title>Micron OS</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body{background:#0A0E14;color:#C9D4E3;font:15px system-ui,-apple-system,'Segoe UI',sans-serif;
+       height:100vh;margin:0;display:flex;align-items:center;justify-content:center}
+  .box{border:1px solid #1C2633;background:#10161F;border-radius:5px;padding:32px;width:288px;text-align:center}
+  h1{font:400 18px Georgia,serif;letter-spacing:.34em;text-transform:uppercase;color:#C8A24A;margin:0 0 20px}
+  input{width:100%;background:#0A0E14;border:1px solid #1C2633;color:#C9D4E3;padding:11px;
+        border-radius:3px;font-size:15px;margin-bottom:12px}
+  input:focus{outline:none;border-color:#8A7239}
+  button{width:100%;background:none;border:1px solid #8A7239;color:#C8A24A;padding:11px;
+         font:400 12px Georgia,serif;letter-spacing:.16em;text-transform:uppercase;border-radius:3px;cursor:pointer}
+  button:hover{border-color:#C8A24A}
+  .err{color:#B85C4F;font-size:13px;min-height:18px;margin-bottom:6px}
+</style></head><body>
+<div class="box"><h1>Micron</h1><div class="err" id="e"></div>
+<input id="p" type="password" placeholder="Password" autofocus>
+<button onclick="go()">Enter</button></div>
+<script>
+async function go(){
+  const p=document.getElementById('p').value;
+  const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({password:p})});
+  if(r.ok)location.reload();
+  else document.getElementById('e').textContent='Incorrect.';
+}
+document.getElementById('p').addEventListener('keydown',e=>{if(e.key==='Enter')go()});
+</script></body></html>

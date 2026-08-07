@@ -43,18 +43,33 @@ def _post(url: str, payload: dict, timeout: int, headers: dict) -> dict:
         return json.loads(resp.read())
 
 
-def _ollama(prompt, system, model, cfg, timeout, json_mode):
+def _ollama(prompt, system, model, cfg, timeout, json_mode, images=None):
+    options = {"temperature": 0.1 if json_mode else 0.7}
+    # num_ctx and num_predict, when set, cap context and output length. On an
+    # 8GB card a smaller context is markedly faster and rarely a real limit
+    # for conversation; they are configurable so heavy tasks can raise them.
+    if cfg.get("num_ctx"):
+        options["num_ctx"] = cfg["num_ctx"]
+    if cfg.get("num_predict"):
+        options["num_predict"] = cfg["num_predict"]
     payload = {
         "model": model, "prompt": prompt, "system": system, "stream": False,
-        "options": {"temperature": 0.1 if json_mode else 0.7},
+        "options": options,
+        # keep_alive: hold the model in VRAM between messages so a paused
+        # conversation does not pay a full reload on the next word. The
+        # single biggest latency win on a local box. "30m" by default; set
+        # "-1" to pin it forever, "0" to unload immediately after each call.
+        "keep_alive": cfg.get("keep_alive", "30m"),
     }
+    if images:
+        payload["images"] = images  # base64 strings; needs a vision model
     if json_mode:
         payload["format"] = "json"
     url = cfg.get("ollama_url", "http://127.0.0.1:11434") + "/api/generate"
     return url, payload, {}, lambda d: d.get("response", "")
 
 
-def _openai(prompt, system, model, cfg, timeout, json_mode):
+def _openai(prompt, system, model, cfg, timeout, json_mode, images=None):
     payload = {
         "model": model,
         "messages": [{"role": "system", "content": system},
@@ -76,7 +91,7 @@ PROVIDERS = {"ollama": _ollama, "openai": _openai}
 async def complete(
     prompt: str, cfg: dict, system: str = WORKER_SYSTEM,
     model: str | None = None, timeout: int = 300, json_mode: bool = False,
-    section: str = "core",
+    section: str = "core", images: list[str] | None = None,
 ) -> str:
     """`section` selects which config block supplies the provider settings, so
     a worker can use local Ollama while the core calls somewhere else."""
@@ -88,7 +103,7 @@ async def complete(
 
     chosen = model or settings.get("model", "qwen2.5:7b")
     url, payload, headers, extract = build(
-        prompt, system, chosen, settings, timeout, json_mode
+        prompt, system, chosen, settings, timeout, json_mode, images=images
     )
     try:
         data = await asyncio.to_thread(_post, url, payload, timeout, headers)

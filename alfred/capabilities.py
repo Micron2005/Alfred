@@ -85,6 +85,37 @@ MANIFEST: dict[str, Capability] = {c.name: c for c in [
         "cad.inspect", "Measure a local STEP/FCStd file",
         binaries=["freecadcmd"], min_ram_gb=4, weight="medium",
     ),
+    Capability(
+        "vision.describe", "Look at an image and describe or answer about it",
+        min_ram_gb=6, needs_model=True, weight="medium",
+    ),
+    Capability(
+        "media.video", "Watch a video via sampled frames plus audio transcript",
+        binaries=["ffmpeg"], min_ram_gb=6, needs_model=True, weight="heavy",
+    ),
+    Capability(
+        "media.inspect", "Identify a file and preview it safely without opening it",
+        min_ram_gb=0.5, weight="light",
+    ),
+    Capability(
+        "speech.transcribe", "Turn spoken audio into text (the household's ears)",
+        python_pkgs=["faster_whisper"], min_ram_gb=1, weight="medium",
+    ),
+    Capability(
+        "speech.synthesize", "Turn text into spoken audio (the household's mouth)",
+        binaries=["piper"], min_ram_gb=0.5, weight="light",
+    ),
+    Capability(
+        "os.observe", "Read-only look at this machine: disk, memory, services, "
+        "packages, logs. Safe, immediate.",
+        binaries=["systemctl"], min_ram_gb=0.5, weight="light",
+    ),
+    Capability(
+        "os.apply", "Change this machine: install/remove packages, control "
+        "services, desktop settings, write home files. ALWAYS requires the "
+        "owner's approval before it runs.",
+        binaries=["systemctl"], min_ram_gb=0.5, weight="light",
+    ),
 ]}
 
 WEIGHT_MIN_RAM = {"light": 0.5, "medium": 4.0, "heavy": 8.0}
