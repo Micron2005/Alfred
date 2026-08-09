@@ -7,7 +7,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=%i
-WorkingDirectory=/home/%i/micron-os
+WorkingDirectory=/home/%i/Alfred
 ExecStart=/usr/bin/python3 /home/%i/Alfred/run_node.py --bus nats://alfredpi.local:4222
 Restart=on-failure
 RestartSec=10

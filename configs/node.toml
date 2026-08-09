@@ -1,0 +1,19 @@
+# UNIVERSAL — optional. run_node.py needs no config at all; this exists only
+# if you would rather keep settings in a file than on the command line.
+#
+# Note what is NOT here: a capability list. Leave it empty and the machine
+# probes itself, announces, and waits for Alfred to give it a job.
+
+[bus]
+kind = "nats"
+url  = "nats://alfredpi.local:4222"
+
+[core]
+artifact_dir = "/mnt/alfred"
+provider   = "ollama"
+model      = "qwen2.5:7b"
+ollama_url = "http://alfreddesktop.local:11434"   # or 127.0.0.1 if local
+
+[worker]
+capabilities = []        # empty = enroll. Fill it in to skip enrollment.
+heartbeat_s = 5

@@ -23,10 +23,8 @@ class AlfredProvider:
 
     def __init__(self, loop) -> None:
         self.loop = loop
-        self.cfg = load(str(Path(__file__).resolve().parent.parent.parent
-                            / "micron-os" / "configs" / "desktop.toml")) \
-            if (Path.home() / "micron-os" / "configs" / "desktop.toml").exists() is False \
-            else load(str(Path.home() / "micron-os" / "configs" / "desktop.toml"))
+        self.cfg = load(str(Path(__file__).resolve().parent.parent
+                            / "configs" / "desktop.toml"))
         self.bus = None
         self.alfred = None
         self.default_project = None
