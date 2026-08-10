@@ -90,6 +90,10 @@ MANIFEST: dict[str, Capability] = {c.name: c for c in [
         min_ram_gb=6, needs_model=True, weight="medium",
     ),
     Capability(
+        "screen.view", "Capture this machine's screen and describe or answer about it",
+        min_ram_gb=6, needs_model=True, weight="medium",
+    ),
+    Capability(
         "media.video", "Watch a video via sampled frames plus audio transcript",
         binaries=["ffmpeg"], min_ram_gb=6, needs_model=True, weight="heavy",
     ),

@@ -33,6 +33,7 @@ HANDLER_MODULES = [
     "alfred.worker.handlers.cad_freecad",
     "alfred.worker.handlers.oscontrol",
     "alfred.worker.handlers.media",
+    "alfred.worker.handlers.screen",
     "alfred.worker.handlers.speech",
 ]
 
