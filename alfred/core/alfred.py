@@ -424,7 +424,7 @@ class Alfred:
     async def _write_status(self) -> None:
         """Heartbeat for the dashboard: current household truth to a file the
         status board reads. Best-effort; never breaks supervision."""
-        import json, time, tempfile, os
+        import json, time, tempfile, os, pathlib
         try:
             now = time.time()
             workers = {w.worker_id: w for w in await self.bus.workers()}
