@@ -304,6 +304,17 @@ class State:
              assignment.note, time.time(), time.time()),
         )
 
+    def all_nodes(self) -> list[dict]:
+        return [dict(r) for r in self.db.execute(
+            "SELECT node_id,name,capabilities,last_seen FROM nodes").fetchall()]
+
+    def in_flight_tasks(self) -> list[dict]:
+        rows = self.db.execute(
+            "SELECT capability,assigned_to,status FROM tasks "
+            "WHERE status IN ('claimed','running') ORDER BY updated_at DESC LIMIT 20"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def known_node(self, node_id: str) -> dict | None:
         row = self.db.execute("SELECT * FROM nodes WHERE node_id=?", (node_id,)).fetchone()
         return dict(row) if row else None

@@ -416,9 +416,50 @@ class Alfred:
         while True:
             try:
                 await self._tick()
+                await self._write_status()
             except Exception:
                 log.exception("supervisor tick failed")
             await asyncio.sleep(tick)
+
+    async def _write_status(self) -> None:
+        """Heartbeat for the dashboard: current household truth to a file the
+        status board reads. Best-effort; never breaks supervision."""
+        import json, time, tempfile, os
+        try:
+            now = time.time()
+            workers = {w.worker_id: w for w in await self.bus.workers()}
+            seen = {p.node_id: p for p in await self.bus.seen_nodes()}
+            nodes = []
+            for row in self.state.all_nodes():
+                nid = row["node_id"]
+                last = row.get("last_seen") or 0
+                online = (now - last) < 30 if last else (nid in seen)
+                nodes.append({
+                    "id": nid, "name": row.get("name") or nid,
+                    "capabilities": (row.get("capabilities") or "").split(",") if row.get("capabilities") else [],
+                    "online": bool(online),
+                    "last_seen_s": round(now - last, 1) if last else None,
+                    "working": nid in workers and workers[nid].queue_depth > 0,
+                    "queue": workers.get(nid).queue_depth if nid in workers else 0,
+                })
+            status = {
+                "ts": now,
+                "alfred": {
+                    "model": self.cfg.get("core", {}).get("model", "?"),
+                    "bus": self.cfg.get("bus", {}).get("kind", "?"),
+                    "projects": len(self.state.active_projects()),
+                    "pending_actions": len(self.state.pending_actions()),
+                },
+                "nodes": nodes,
+                "in_flight": self.state.in_flight_tasks(),
+            }
+            path = pathlib.Path.home() / ".alfred" / "status.json"
+            path.parent.mkdir(exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(status))
+            os.replace(tmp, path)
+        except Exception:
+            pass
 
     async def _tick(self) -> None:
         # A closed laptop lid is indistinguishable from a crash, and both
