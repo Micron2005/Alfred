@@ -311,7 +311,8 @@ class State:
     def in_flight_tasks(self) -> list[dict]:
         rows = self.db.execute(
             "SELECT capability,assigned_to,status FROM tasks "
-            "WHERE status IN ('claimed','running') ORDER BY updated_at DESC LIMIT 20"
+            "WHERE status IN ('queued','claimed','running') "
+            "ORDER BY created_at DESC LIMIT 20"
         ).fetchall()
         return [dict(r) for r in rows]
 

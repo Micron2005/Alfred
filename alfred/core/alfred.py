@@ -434,9 +434,13 @@ class Alfred:
                 nid = row["node_id"]
                 last = row.get("last_seen") or 0
                 online = (now - last) < 30 if last else (nid in seen)
+                try:
+                    caps = json.loads(row.get("capabilities") or "[]")
+                except Exception:
+                    caps = [c for c in (row.get("capabilities") or "").split(",") if c]
                 nodes.append({
                     "id": nid, "name": row.get("name") or nid,
-                    "capabilities": (row.get("capabilities") or "").split(",") if row.get("capabilities") else [],
+                    "capabilities": caps,
                     "online": bool(online),
                     "last_seen_s": round(now - last, 1) if last else None,
                     "working": nid in workers and workers[nid].queue_depth > 0,
@@ -459,7 +463,9 @@ class Alfred:
             tmp.write_text(json.dumps(status))
             os.replace(tmp, path)
         except Exception:
-            pass
+            if not getattr(self, "_status_err_logged", False):
+                self._status_err_logged = True
+                log.exception("status heartbeat failed (dashboard will be blind)")
 
     async def _tick(self) -> None:
         # A closed laptop lid is indistinguishable from a crash, and both
