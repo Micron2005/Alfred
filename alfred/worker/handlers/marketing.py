@@ -40,7 +40,9 @@ DRAFT_SYSTEM = (
     llm.WORKER_SYSTEM
     + " You write marketing copy for a small, founder-run software company. "
     "Every fact — price, feature, audience, claim — must come from the brief "
-    "or the task; never invent numbers, testimonials or customers. Plain, "
+    "or the task; never invent numbers, testimonials, customers or social "
+    "proof of any kind ('many founders', 'shops love it', 'trusted by') "
+    "unless the brief states it. Plain, "
     "specific, confident. No hype words, no exclamation marks, no emoji "
     "unless the channel is explicitly stated to want them."
 )
@@ -111,7 +113,8 @@ async def marketing_draft(task: Task, cfg: dict) -> TaskResult:
     grounding = (
         f"Product brief ({brief_name}):\n{brief}" if brief
         else "No product brief is on file. Use ONLY facts stated in the task; "
-             "where a fact is needed and missing, write [FILL IN] rather than guess."
+             "where a fact is needed and missing, write [FILL IN] rather than guess. "
+             "Make no claims about results, adoption or satisfaction."
     )
     upstream = task.inputs.get("upstream") or []
     research = ("\n\nFindings from earlier steps:\n" + "\n".join(upstream)) if upstream else ""
@@ -352,7 +355,9 @@ async def marketing_audit(task: Task, cfg: dict) -> TaskResult:
         + f"Question from the owner: {task.prompt}\n\n"
         f"Page: {final_url}\nTitle: {page.title!r}\nHeadline(s): {page.h1}\n\n"
         f"Visible text:\n{visible}\n\n"
-        "In under 250 words: (1) who this page appears to be for, in one line; "
+        + ("Judge the page against the brief's first-priority audience and quote "
+           "prices only with the plan name the brief gives them.\n\n" if brief else "")
+        + "In under 250 words: (1) who this page appears to be for, in one line; "
         "(2) whether the headline states a clear outcome for that reader; "
         "(3) the single biggest weakness in the message; (4) one concrete "
         "rewrite of the headline and one of the meta description.",
