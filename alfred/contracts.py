@@ -35,6 +35,8 @@ CAP_CALC = "calc.engineering"
 CAP_RESEARCH_WEB = "research.web"
 CAP_RESEARCH_DOC = "research.document"
 CAP_DOCS_WRITE = "docs.write"
+CAP_MARKETING_AUDIT = "marketing.audit"
+CAP_MARKETING_DRAFT = "marketing.draft"
 CAP_HW_MQTT = "hw.mqtt"
 CAP_HW_SENSOR = "hw.sensor"
 

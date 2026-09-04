@@ -28,6 +28,7 @@ HANDLER_MODULES = [
     "alfred.worker.handlers.code",
     "alfred.worker.handlers.research",
     "alfred.worker.handlers.docs",
+    "alfred.worker.handlers.marketing",
     "alfred.worker.handlers.hardware",
     "alfred.worker.handlers.cad_onshape",
     "alfred.worker.handlers.cad_freecad",

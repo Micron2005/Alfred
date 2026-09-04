@@ -16,4 +16,4 @@ ollama_url = "http://alfreddesktop.local:11434"
 [worker]
 id = "chromebook"
 concurrency = 1
-capabilities = ["docs.write"]
+capabilities = ["docs.write", "marketing.audit", "marketing.draft"]

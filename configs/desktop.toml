@@ -43,6 +43,7 @@ claim_delay_s = 15       # the zenbook gets first claim on shared work
 capabilities = [
     "code.write", "code.test", "calc.engineering",
     "research.web", "research.document", "docs.write",
+    "marketing.audit", "marketing.draft",
     "cad.measure", "cad.variables", "cad.export", "cad.evaluate",
     "cad.generate", "cad.inspect",
     "os.observe", "os.apply",
@@ -53,6 +54,11 @@ capabilities = [
 
 [research]
 searxng_url = "http://alfredpi.local:8888"
+
+# Product briefs for marketing.*: one markdown file per product. Defaults to
+# configs/briefs/ in this repo; point elsewhere to keep briefs out of git.
+# [marketing]
+# briefs_dir = "~/.alfred/briefs"
 
 # Ids Alfred should assume unless a task overrides them.
 # Find them in the Onshape URL:
