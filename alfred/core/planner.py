@@ -16,7 +16,7 @@ from alfred.worker.handlers import registered_capabilities
 log = logging.getLogger("alfred.planner")
 
 PLANNER_SYSTEM = (
-    "You decompose engineering requests into delegatable tasks. Return JSON "
+    "You decompose engineering and business requests into delegatable tasks. Return JSON "
     "only, no prose, no markdown fences. Be sparing: fewer, larger tasks beat "
     "many small ones, because every task costs a round trip. If the request "
     "needs no delegation at all, return {\"tasks\": []}."
@@ -28,7 +28,7 @@ Project context:
 {briefing}
 
 Available capabilities (use ONLY these, exactly as written): {caps}
-
+{hints}
 Return JSON: {{"tasks": [...]}}. Each task object:
   "ref": short id unique within this plan, e.g. "t1"
   "capability": exactly one string from the list above
@@ -42,6 +42,20 @@ a message) also needs "needs_idempotency": true.
 
 If you cannot map the request onto the capabilities above, return
 {{"tasks": []}} rather than inventing one."""
+
+
+# What a capability expects in `inputs`, for the ones where a 7B planner
+# would otherwise have to guess the key names.
+INPUT_HINTS = {
+    "research.web": "inputs: {\"query\": str} or {\"urls\": [str]}",
+    "research.document": "inputs: {\"paths\": [str]}",
+    "marketing.audit": "inputs: {\"url\": str, \"product\": str (brief name, optional)}",
+    "marketing.draft": (
+        "inputs: {\"kind\": one of post|thread|email|followup|ad|landing|"
+        "comparison|script|plan|answer, \"channel\": str, \"audience\": str, "
+        "\"goal\": str, \"product\": str (brief name), \"count\": int 1-5}"
+    ),
+}
 
 
 async def plan(
@@ -67,6 +81,7 @@ async def plan(
         request=request,
         briefing=briefing or "(new project, no history)",
         caps=", ".join(caps),
+        hints="".join(f"  {c} {INPUT_HINTS[c]}\n" for c in caps if c in INPUT_HINTS),
     )
 
     for attempt in range(3):
@@ -187,6 +202,18 @@ def verify(task: Task, result: TaskResult) -> tuple[bool, str]:
         if not result.summary.strip():
             return False, "calculation produced no output"
         return True, "calculation executed"
+
+    if task.capability == "marketing.audit":
+        if not result.data.get("fetched"):
+            return False, "the page was never fetched"
+        return True, f"live page checked, {len(result.data.get('issues', []))} issue(s) found"
+
+    if task.capability.startswith("marketing."):
+        if not result.artifacts:
+            return False, "no copy produced"
+        if not result.data.get("brief"):
+            return True, "drafted without a product brief; facts are unverified"
+        return True, f"drafted from the {result.data['brief']} brief"
 
     if task.capability.startswith("research."):
         if result.data.get("truncated"):

@@ -54,6 +54,16 @@ MANIFEST: dict[str, Capability] = {c.name: c for c in [
         min_ram_gb=1, needs_model=True, weight="light",
     ),
     Capability(
+        "marketing.audit", "Fetch a live web page and check what search engines and "
+        "link previews see: title, description, Open Graph, headline, sitemap",
+        min_ram_gb=1, needs_model=True, weight="light",
+    ),
+    Capability(
+        "marketing.draft", "Write marketing copy (posts, emails, ads, landing hero, "
+        "comparison page, weekly plan) grounded in a product brief",
+        min_ram_gb=1, needs_model=True, weight="light",
+    ),
+    Capability(
         "hw.mqtt", "Publish commands to MQTT devices",
         python_pkgs=["paho"], min_ram_gb=0.5, weight="light",
     ),

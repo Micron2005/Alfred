@@ -213,6 +213,9 @@ class Alfred:
         "install", "update", "upgrade", "restart", "service", "package",
         "observe", "check the", "disk", "memory", "read the", "document",
         "torque", "stress", "load", "bracket", "gear", "motor", "simulate",
+        "market", "promote", "seo", "audit", "campaign", "launch", "pitch",
+        "tagline", "landing page", "ad copy", "outreach", "cold email",
+        "post for", "post about", "customers", "sell", "competitor",
     )
 
     def _might_need_work(self, message: str) -> bool:
