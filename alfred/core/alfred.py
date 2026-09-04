@@ -214,8 +214,10 @@ class Alfred:
         "observe", "check the", "disk", "memory", "read the", "document",
         "torque", "stress", "load", "bracket", "gear", "motor", "simulate",
         "market", "promote", "seo", "audit", "campaign", "launch", "pitch",
-        "tagline", "landing page", "ad copy", "outreach", "cold email",
-        "post for", "post about", "customers", "sell", "competitor",
+        "tagline", "landing page", "ad copy", "outreach", "email", "draft",
+        "write me", "write a", "write two", "write three", "post", "tweet",
+        "headline", "newsletter", "blog", "facebook", "linkedin", "reddit",
+        "customers", "sell", "competitor",
     )
 
     def _might_need_work(self, message: str) -> bool:
