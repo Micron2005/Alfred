@@ -13,7 +13,10 @@ import asyncio
 import json
 import logging
 
-from alfred.bus import build_bus
+from alfred.bus import connect_core
+from alfred.bus.discovery import beacon
+from alfred.bus.hosting import stop_server
+from alfred.bus.nats_bus import BusUnreachable
 from alfred.capabilities import eligible_for
 from alfred.contracts import Assignment
 from alfred.config import load
@@ -72,13 +75,31 @@ async def handle_command(alfred, line: str) -> str:
 
     if cmd == "/nodes":
         lines = []
-        for profile in await alfred.bus.seen_nodes():
-            known = alfred.state.known_node(profile.node_id)
+        live = await alfred.live_workers_by_node()
+        seen = {p.node_id: p for p in await alfred.bus.seen_nodes()}
+        offline = [r for r in alfred.state.all_nodes() if r["node_id"] not in seen]
+        for node_id in list(seen) + [r["node_id"] for r in offline]:
+            known = alfred.state.known_node(node_id)
             name = (known or {}).get("name") or ""
             caps = json.loads((known or {}).get("capabilities") or "[]")
-            status = f"{name}: {', '.join(caps)}" if caps else "UNASSIGNED"
-            lines.append(f"  [{profile.node_id}] {profile.describe()}\n      {status}")
-        return "\n".join(lines) if lines else "  no machines announcing"
+            worker = live.get(node_id)
+            profile = seen.get(node_id)
+            if worker is not None:
+                status = f"{worker.worker_id}: {', '.join(worker.capabilities)}"
+                status += "  (this machine)" if node_id == alfred.local_node_id else "  (online)"
+            elif profile is None:
+                status = f"{name}: {', '.join(caps)}  (OFFLINE)"
+            elif caps:
+                status = f"{name}: {', '.join(caps)}  (assigned, worker not heartbeating)"
+            else:
+                status = "UNASSIGNED  -- /adopt or /assign to give it a job"
+            about = profile.describe() if profile else (known or {}).get("hostname") or "?"
+            lines.append(f"  [{node_id}] {about}\n      {status}")
+        if not lines:
+            return ("  no machines announcing" if alfred.cfg["bus"]["kind"] == "nats"
+                    else "  no machines announcing (bus.kind is 'local': other "
+                         "machines cannot join; set kind = \"nats\" in the config)")
+        return "\n".join(lines)
 
     if cmd == "/probe" and rest:
         profile = next((p for p in await alfred.bus.seen_nodes() if p.node_id == rest[0]), None)
@@ -127,8 +148,11 @@ async def main() -> None:
     )
 
     cfg = load(args.config)
-    bus = build_bus(cfg)
-    await bus.connect()
+    try:
+        bus, join_url = await connect_core(cfg)
+    except (BusUnreachable, RuntimeError) as exc:
+        print(f"Alfred cannot start: {exc}")
+        return
 
     alfred = Alfred(bus, cfg)
     project_id = args.project
@@ -137,6 +161,11 @@ async def main() -> None:
         print(f"created project {project_id}")
 
     background = [asyncio.create_task(alfred.supervise())]
+    if join_url:
+        background.append(asyncio.create_task(beacon(join_url)))
+        print(f"Bus is up at {join_url}. Other machines join with:\n"
+              f"    python run_node.py --bus {join_url}\n"
+              f"  or, on the same network, simply:  python run_node.py --bus auto")
 
     # The desktop always runs a worker of its own. This is what turns
     # "if the Zenbook is unavailable, do it myself" into a scheduling
@@ -162,6 +191,7 @@ async def main() -> None:
         for task in background:
             task.cancel()
         await bus.close()
+        stop_server()
 
 
 if __name__ == "__main__":

@@ -19,6 +19,28 @@ if [ "$ROLE" = "worker" ]; then
   exit 0
 fi
 
+# The brain hosts the bus other machines join. One static binary, no service
+# to manage: run_core.py / run_server.py start and stop it themselves.
+if ! command -v nats-server >/dev/null && [ ! -x "$HOME/.local/bin/nats-server" ]; then
+  echo "== Installing nats-server (the bus the laptop and other machines join) =="
+  NATS_VERSION="v2.10.22"
+  case "$(uname -m)" in
+    x86_64)  NATS_ARCH=amd64 ;;
+    aarch64) NATS_ARCH=arm64 ;;
+    armv7l)  NATS_ARCH=arm7 ;;
+    *)       echo "   unknown arch $(uname -m); install nats-server by hand"; NATS_ARCH="" ;;
+  esac
+  if [ -n "$NATS_ARCH" ]; then
+    TARBALL="nats-server-$NATS_VERSION-linux-$NATS_ARCH"
+    TMP="$(mktemp -d)"
+    curl -fsSL "https://github.com/nats-io/nats-server/releases/download/$NATS_VERSION/$TARBALL.tar.gz" \
+      | tar -xz -C "$TMP"
+    mkdir -p "$HOME/.local/bin"
+    install -m 755 "$TMP/$TARBALL/nats-server" "$HOME/.local/bin/nats-server"
+    rm -rf "$TMP"
+  fi
+fi
+
 if ! command -v ollama >/dev/null; then
   echo "== Installing Ollama (his engine) =="
   curl -fsSL https://ollama.com/install.sh | sh

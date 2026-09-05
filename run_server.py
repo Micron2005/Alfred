@@ -27,12 +27,18 @@ import argparse
 import asyncio
 import json
 import logging
+import signal
 import threading
+from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from alfred.bus import build_bus
+from alfred.bus import connect_core
+from alfred.bus.discovery import beacon
+from alfred.bus.hosting import stop_server
+from alfred.bus.nats_bus import BusUnreachable
 from alfred.config import load
+from alfred.contracts import Assignment
 from alfred.core.alfred import Alfred
 from alfred.worker.runtime import WorkerRuntime
 from alfred import shell_lock
@@ -66,6 +72,7 @@ class Bridge:
         self.loop = loop
         self._talk_lock = asyncio.Lock()
         self.default_project: str | None = None
+        self.join_url: str | None = None   # how other machines reach the bus
 
     def chat(self, message: str, project_id: str | None,
              attachments: list[str] | None = None) -> str:
@@ -135,22 +142,33 @@ class Bridge:
     def status(self) -> dict:
         async def _gather() -> dict:
             nodes = []
-            for profile in await self.alfred.bus.seen_nodes():
-                known = self.alfred.state.known_node(profile.node_id)
+            live = await self.alfred.live_workers_by_node()
+            seen = {p.node_id: p for p in await self.alfred.bus.seen_nodes()}
+            for node_id in list(seen) + [
+                r["node_id"] for r in self.alfred.state.all_nodes() if r["node_id"] not in seen
+            ]:
+                known = self.alfred.state.known_node(node_id)
                 caps = json.loads((known or {}).get("capabilities") or "[]")
+                worker = live.get(node_id)
+                profile = seen.get(node_id)
                 nodes.append({
-                    "node_id": profile.node_id,
-                    "name": (known or {}).get("name") or "",
-                    "describe": profile.describe(),
-                    "capabilities": caps,
-                    "assigned": bool(caps),
+                    "node_id": node_id,
+                    "name": worker.worker_id if worker else (known or {}).get("name") or "",
+                    "describe": profile.describe() if profile else (known or {}).get("hostname") or "",
+                    "capabilities": worker.capabilities if worker else caps,
+                    "assigned": bool(worker or caps),
+                    "online": worker is not None,
+                    "seen": profile is not None,
+                    "local": node_id == self.alfred.local_node_id,
                 })
             workers = [
-                {"id": w.worker_id, "queue": w.queue_depth, "caps": w.capabilities}
+                {"id": w.worker_id, "host": w.host, "node_id": w.node_id,
+                 "queue": w.queue_depth, "caps": w.capabilities}
                 for w in await self.alfred.bus.workers()
             ]
             return {
                 "pending_actions": self.alfred.state.pending_actions(),
+                "bus": {"kind": self.alfred.cfg["bus"]["kind"], "join_url": self.join_url},
                 "nodes": nodes,
                 "workers": workers,
                 "projects": self.alfred.state.active_projects(),
@@ -370,6 +388,38 @@ def make_handler(bridge: Bridge):
                 except Exception as exc:
                     self._json(500, {"error": str(exc)})
                 return
+            m = _re.match(r"^/api/nodes/([\w.-]+)/(propose|assign)$", self.path)
+            if m:
+                # Giving a machine a job, from the shell rather than the REPL:
+                # `propose` asks Alfred what the machine is good for; `assign`
+                # commits {name, capabilities}. The node adopts it within a
+                # heartbeat and starts advertising.
+                node_id, verb = m.group(1), m.group(2)
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length) or b"{}")
+                    if verb == "propose":
+                        coro = bridge.alfred.propose_for(node_id, payload.get("hint") or "")
+                    else:
+                        caps = [c.strip() for c in payload.get("capabilities") or [] if c.strip()]
+                        name = (payload.get("name") or "").strip()
+                        if not name or not caps:
+                            self._json(400, {"error": "name and capabilities are required"})
+                            return
+                        coro = bridge.alfred.enroll(
+                            Assignment(node_id=node_id, name=name, capabilities=caps))
+                    future = asyncio.run_coroutine_threadsafe(coro, bridge.loop)
+                    result = future.result(timeout=CHAT_TIMEOUT_S)
+                    if verb == "propose":
+                        if result is None:
+                            self._json(404, {"error": f"no machine announcing with id {node_id}"})
+                        else:
+                            self._json(200, {"proposal": asdict(result)})
+                    else:
+                        self._json(200, {"result": result})
+                except Exception as exc:
+                    self._json(500, {"error": str(exc)})
+                return
             if self.path.startswith("/api/appdata/"):
                 app_id = self.path.removeprefix("/api/appdata/").strip("/")
                 if not app_id or "/" in app_id:
@@ -453,11 +503,15 @@ async def main() -> None:
     )
 
     cfg = load(args.config)
-    bus = build_bus(cfg)
-    await bus.connect()
+    try:
+        bus, join_url = await connect_core(cfg)
+    except (BusUnreachable, RuntimeError) as exc:
+        log.error("Alfred cannot start: %s", exc)
+        raise SystemExit(1)
 
     alfred = Alfred(bus, cfg)
     bridge = Bridge(alfred, asyncio.get_running_loop())
+    bridge.join_url = join_url
     if args.project:
         bridge.default_project = args.project
     else:
@@ -471,6 +525,10 @@ async def main() -> None:
         )
 
     background = [asyncio.create_task(alfred.supervise())]
+    if join_url:
+        background.append(asyncio.create_task(beacon(join_url)))
+        log.info("bus at %s; other machines: python run_node.py --bus %s (or --bus auto)",
+                 join_url, join_url)
     if cfg["worker"]["capabilities"]:
         background.append(asyncio.create_task(WorkerRuntime(bus, cfg).run()))
 
@@ -478,8 +536,15 @@ async def main() -> None:
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     log.info("Micron OS shell at http://%s:%d", args.host, args.port)
 
+    stop = asyncio.Event()
     try:
-        await asyncio.Event().wait()  # run until systemd or Ctrl-C says stop
+        # systemd stops us with SIGTERM; without a handler that skips the
+        # cleanup below and leaves nats-server running headless.
+        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, stop.set)
+    except (NotImplementedError, RuntimeError):
+        pass  # Windows: Ctrl-C only
+    try:
+        await stop.wait()  # run until systemd or Ctrl-C says stop
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
@@ -487,6 +552,7 @@ async def main() -> None:
         for task in background:
             task.cancel()
         await bus.close()
+        stop_server()
 
 
 if __name__ == "__main__":
