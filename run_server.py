@@ -15,10 +15,16 @@ there is one Alfred — two simultaneous conversations would interleave his
 memory writes.
 
 Endpoints:
-    GET  /                    the shell
+    GET  /                    the Micron OS shell if installed, else Alfred's own panel
+    GET  /panel               Alfred's own panel: chat, machines, approvals, enrolment
     POST /api/chat            {"message": str, "project_id": str|null}
-    GET  /api/status          machines, projects, undelivered notices
+    GET  /api/history         recent conversation turns
+    GET  /api/status          machines, projects, notices (undelivered + recent)
     GET  /api/health          liveness for systemd
+
+The panel is one dependency-free HTML file in panel/. It is not the house --
+Micron OS remains the shell -- it is the butler's own door, so a desktop
+without Micron OS still gets a page instead of a terminal.
 """
 
 from __future__ import annotations
@@ -29,6 +35,7 @@ import json
 import logging
 import signal
 import threading
+import webbrowser
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -45,6 +52,7 @@ from alfred import shell_lock
 
 log = logging.getLogger("alfred.server")
 SHELL = Path(__file__).parent / "shell" / "index.html"
+PANEL = Path(__file__).parent / "panel" / "index.html"
 LOGIN_HTML = (Path(__file__).parent / "shell" / "login.html").read_text() \
     if (Path(__file__).parent / "shell" / "login.html").exists() else "<h1>Micron OS locked</h1>"
 APPS_DIR = Path(__file__).parent / "apps"
@@ -173,6 +181,7 @@ class Bridge:
                 "workers": workers,
                 "projects": self.alfred.state.active_projects(),
                 "notices": self.alfred.state.undelivered(),
+                "recent_notices": self.alfred.state.recent_notices(),
                 "default_project": self.default_project,
             }
 
@@ -203,16 +212,19 @@ def make_handler(bridge: Bridge):
                 self._json(200, {"ok": True, "locked": shell_lock.is_set()})
                 return
             if shell_lock.is_set() and not self._authed():
-                if self.path in {"/", "/index.html"}:
+                if self.path == "/panel" or (self.path in {"/", "/index.html"} and not SHELL.exists()):
+                    self._send(200, PANEL.read_bytes(), "text/html; charset=utf-8")  # asks for the password itself
+                elif self.path in {"/", "/index.html"}:
                     self._send(200, LOGIN_HTML.encode(), "text/html; charset=utf-8")
                 else:
                     self._json(401, {"error": "locked"})
                 return
-            if self.path in {"/", "/index.html"}:
-                if SHELL.exists():
-                    self._send(200, SHELL.read_bytes(), "text/html; charset=utf-8")
-                else:
-                    self._send(200, b"Micron OS shell missing; API is up.", "text/plain")
+            if self.path == "/panel" or (self.path in {"/", "/index.html"} and not SHELL.exists()):
+                self._send(200, PANEL.read_bytes(), "text/html; charset=utf-8")
+            elif self.path in {"/", "/index.html"}:
+                self._send(200, SHELL.read_bytes(), "text/html; charset=utf-8")
+            elif self.path == "/api/history":
+                self._json(200, {"turns": bridge.alfred.state.recent_turns(limit=40)})
             elif self.path == "/api/status":
                 try:
                     self._json(200, bridge.status())
@@ -496,6 +508,8 @@ async def main() -> None:
     ap.add_argument("--host", default="127.0.0.1",
                     help="0.0.0.0 to reach the shell from other machines")
     ap.add_argument("--project", default=None, help="default project id for the shell")
+    ap.add_argument("--open", action="store_true",
+                    help="open the page in the default browser once the server is up")
     args = ap.parse_args()
 
     logging.basicConfig(
@@ -534,7 +548,11 @@ async def main() -> None:
 
     httpd = ThreadingHTTPServer((args.host, args.port), make_handler(bridge))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    log.info("Micron OS shell at http://%s:%d", args.host, args.port)
+    page_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
+    log.info("%s at http://%s:%d", "Micron OS shell" if SHELL.exists() else "Alfred's panel",
+             page_host, args.port)
+    if args.open:
+        webbrowser.open(f"http://{page_host}:{args.port}/")
 
     stop = asyncio.Event()
     try:

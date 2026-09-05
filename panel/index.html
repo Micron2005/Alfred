@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alfred</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f25; --line: #2a2e36; --text: #e6e6e6;
+    --dim: #8b919c; --ok: #4cc38a; --off: #e5484d; --warn: #f5a524; --accent: #6ea8fe;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; font-size: 15px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); height: 100vh; display: flex; }
+  aside { width: 340px; min-width: 300px; border-right: 1px solid var(--line); overflow-y: auto;
+          background: var(--panel); display: flex; flex-direction: column; }
+  main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  h1 { font-size: 17px; margin: 0; padding: 16px 18px 8px; letter-spacing: .3px; }
+  h1 small { color: var(--dim); font-weight: normal; font-size: 12px; margin-left: 8px; }
+  section { padding: 10px 18px 14px; border-bottom: 1px solid var(--line); }
+  section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim);
+               margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; }
+  .node { padding: 8px 0; border-top: 1px solid var(--line); }
+  .node:first-of-type { border-top: 0; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--off); flex: none; }
+  .dot.on { background: var(--ok); }
+  .dot.new { background: var(--warn); }
+  .name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tag { color: var(--dim); font-size: 12px; white-space: nowrap; }
+  .row button { flex: none; white-space: nowrap; }
+  .caps { color: var(--dim); font-size: 12px; margin-top: 3px; line-height: 1.5; word-break: break-word; }
+  button { background: #2b3038; color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+           padding: 5px 10px; font-size: 13px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #0b1020; border-color: var(--accent); font-weight: 600; }
+  button.danger { border-color: var(--off); }
+  button:disabled { opacity: .5; cursor: default; }
+  input, textarea { background: #0f1115; color: var(--text); border: 1px solid var(--line);
+                    border-radius: 6px; padding: 8px 10px; font: inherit; width: 100%; }
+  textarea { resize: none; }
+  .enroll { margin-top: 8px; padding: 10px; background: #0f1115; border-radius: 8px; display: grid; gap: 6px; min-width: 0; }
+  .enroll .row { flex-wrap: wrap; }
+  .enroll input, .enroll textarea { min-width: 0; }
+  .enroll label { font-size: 12px; color: var(--dim); }
+  .empty { color: var(--dim); font-size: 13px; padding: 4px 0; }
+  .action { padding: 8px 0; border-top: 1px solid var(--line); }
+  .action p { margin: 0 0 6px; font-size: 14px; }
+  .notice { font-size: 13px; padding: 4px 0; color: #c9ced6; border-top: 1px solid var(--line); }
+  .notice:first-of-type { border-top: 0; }
+  pre { background: #0f1115; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px;
+        font-size: 12.5px; overflow-x: auto; margin: 6px 0; white-space: pre-wrap; }
+  .hint { color: var(--dim); font-size: 12.5px; line-height: 1.5; margin: 4px 0; }
+
+  #log { flex: 1; overflow-y: auto; padding: 22px 8% 10px; }
+  .msg { max-width: 820px; margin: 0 auto 16px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+  .msg.you { color: var(--accent); }
+  .msg.you::before { content: "You"; display: block; font-size: 11px; text-transform: uppercase;
+                     letter-spacing: 1px; color: var(--dim); margin-bottom: 2px; }
+  .msg.alfred::before { content: "Alfred"; display: block; font-size: 11px; text-transform: uppercase;
+                        letter-spacing: 1px; color: var(--dim); margin-bottom: 2px; }
+  .msg.sys { color: var(--dim); font-size: 13px; text-align: center; }
+  .msg.err { color: var(--off); }
+  form#ask { display: flex; gap: 8px; padding: 12px 8% 18px; border-top: 1px solid var(--line); }
+  form#ask textarea { flex: 1; height: 56px; }
+  form#ask button { height: 56px; padding: 0 20px; }
+  .thinking { color: var(--dim); font-style: italic; }
+  #topbar { display: flex; justify-content: space-between; align-items: center; padding: 10px 8%;
+            border-bottom: 1px solid var(--line); font-size: 13px; color: var(--dim); }
+  #topbar a { color: var(--dim); cursor: pointer; text-decoration: underline; }
+
+  #login { position: fixed; inset: 0; background: var(--bg); display: none; align-items: center;
+           justify-content: center; z-index: 10; }
+  #login form { width: 320px; display: grid; gap: 10px; }
+  #login h2 { margin: 0 0 6px; font-size: 18px; }
+  @media (max-width: 800px) { body { flex-direction: column; } aside { width: auto; min-width: 0;
+    max-height: 45vh; border-right: 0; border-bottom: 1px solid var(--line); } }
+</style>
+</head>
+<body>
+<div id="login"><form id="loginform">
+  <h2>Alfred is locked</h2>
+  <input type="password" id="pw" placeholder="password" autofocus>
+  <button class="primary" type="submit">Unlock</button>
+  <div class="hint" id="loginerr"></div>
+</form></div>
+
+<aside>
+  <h1>Alfred <small id="busline"></small></h1>
+
+  <section>
+    <h2>Machines <button id="refresh" title="refresh now">↻</button></h2>
+    <div id="nodes"><div class="empty">connecting…</div></div>
+  </section>
+
+  <section>
+    <h2>Needs your approval</h2>
+    <div id="actions"><div class="empty">nothing waiting</div></div>
+  </section>
+
+  <section>
+    <h2>Notes from Alfred</h2>
+    <div id="notices"><div class="empty">none</div></div>
+  </section>
+
+  <section>
+    <h2>Add a machine</h2>
+    <div id="join"></div>
+  </section>
+
+  <section>
+    <h2>Lock</h2>
+    <div class="row">
+      <input type="password" id="newpw" placeholder="new password (blank = no lock)">
+      <button id="setlock">Set</button>
+      <button id="logout" title="lock now">Lock</button>
+    </div>
+  </section>
+</aside>
+
+<main>
+  <div id="topbar">
+    <span id="project"></span>
+    <span><a id="clearlog">clear screen</a></span>
+  </div>
+  <div id="log"></div>
+  <form id="ask">
+    <textarea id="text" placeholder="Ask Alfred anything. Enter sends, Shift+Enter for a new line."></textarea>
+    <button class="primary" id="send" type="submit">Send</button>
+  </form>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  let status = null;
+  let busy = false;
+
+  async function api(path, opts = {}) {
+    const res = await fetch(path, {
+      headers: {"Content-Type": "application/json"},
+      ...opts,
+      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+    });
+    if (res.status === 401) { showLogin(true); throw new Error("locked"); }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    return data;
+  }
+
+  // ---- login ------------------------------------------------------------
+  function showLogin(on) { $("login").style.display = on ? "flex" : "none"; if (on) $("pw").focus(); }
+  $("loginform").onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await api("/api/login", {method: "POST", body: {password: $("pw").value}});
+      $("pw").value = ""; $("loginerr").textContent = ""; showLogin(false);
+      await loadHistory(); await refresh();
+    } catch (err) { $("loginerr").textContent = err.message; }
+  };
+  $("setlock").onclick = async () => {
+    try {
+      const r = await api("/api/setlock", {method: "POST", body: {password: $("newpw").value}});
+      $("newpw").value = "";
+      say("sys", r.locked ? "Lock set. The page will ask for the password from now on." : "Lock removed.");
+    } catch (err) { say("err", err.message); }
+  };
+  $("logout").onclick = async () => {
+    await fetch("/api/logout", {method: "POST"});
+    const h = await fetch("/api/health").then((r) => r.json()).catch(() => ({}));
+    if (h.locked) showLogin(true); else say("sys", "No password is set, so there is nothing to lock. Set one above.");
+  };
+
+  // ---- chat -------------------------------------------------------------
+  function say(kind, text) {
+    const div = document.createElement("div");
+    div.className = "msg " + kind;
+    div.textContent = text;
+    $("log").appendChild(div);
+    $("log").scrollTop = $("log").scrollHeight;
+    return div;
+  }
+  async function loadHistory() {
+    try {
+      const h = await api("/api/history");
+      $("log").innerHTML = "";
+      for (const [role, body] of h.turns) say(role === "Alfred" ? "alfred" : "you", body);
+      if (!h.turns.length) say("sys", "Say hello. Alfred is listening.");
+    } catch (err) { if (err.message !== "locked") say("err", err.message); }
+  }
+  $("ask").onsubmit = async (e) => {
+    e.preventDefault();
+    const text = $("text").value.trim();
+    if (!text || busy) return;
+    busy = true; $("send").disabled = true; $("text").value = "";
+    say("you", text);
+    const pending = say("alfred thinking", "…working. Steps run on whichever machine has the right hands; this can take a while.");
+    try {
+      const r = await api("/api/chat", {method: "POST", body: {message: text}});
+      pending.className = "msg alfred"; pending.textContent = r.reply;
+    } catch (err) {
+      pending.className = "msg err"; pending.textContent = err.message === "locked" ? "Locked; unlock and send again." : "Alfred could not answer: " + err.message;
+    } finally { busy = false; $("send").disabled = false; $("text").focus(); refresh(); }
+  };
+  $("text").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("ask").requestSubmit(); } };
+  $("clearlog").onclick = () => { $("log").innerHTML = ""; };
+
+  // ---- status -----------------------------------------------------------
+  function renderNodes(nodes) {
+    const box = $("nodes");
+    if (!nodes.length) { box.innerHTML = '<div class="empty">no machines yet</div>'; return; }
+    // Re-rendering must not eat a half-filled enrolment form: keep the
+    // element itself and re-attach it to its machine.
+    const open = new Map([...box.querySelectorAll(".enroll")].map((el) => [el.dataset.node, el]));
+    box.innerHTML = "";
+    for (const n of nodes) {
+      const div = document.createElement("div");
+      div.className = "node";
+      const unassigned = !n.assigned && n.seen;
+      const dot = unassigned ? "new" : (n.online ? "on" : "");
+      const state = unassigned ? "new, waiting for a job" : (n.online ? "online" : "offline");
+      div.innerHTML = `
+        <div class="row">
+          <span class="dot ${dot}"></span>
+          <span class="name">${esc(n.name || (n.describe || n.node_id).split(" (")[0])}</span>
+          <span class="tag">${n.local ? "this desktop · " : ""}${state}</span>
+          ${unassigned ? `<button data-enroll="${esc(n.node_id)}">Give it a job</button>` : ""}
+        </div>
+        ${n.describe ? `<div class="caps">${esc(n.describe)}</div>` : ""}
+        <div class="caps">${n.capabilities.length ? esc(n.capabilities.join(", ")) : (unassigned ? "" : "no capabilities")}</div>`;
+      box.appendChild(div);
+      if (open.has(n.node_id) && unassigned) div.appendChild(open.get(n.node_id));
+    }
+    box.querySelectorAll("[data-enroll]").forEach((b) => {
+      b.onclick = () => openEnroll(b.closest(".node"), nodes.find((n) => n.node_id === b.dataset.enroll));
+    });
+  }
+
+  async function openEnroll(div, n) {
+    let form = div.querySelector(".enroll");
+    if (!form) {
+      form = document.createElement("div");
+      form.className = "enroll"; form.dataset.node = n.node_id;
+      form.innerHTML = `
+        <label>What should Alfred call it?</label>
+        <input class="e-name" placeholder="zenbook" value="${esc((n.describe || "").split(/[\s(]/)[0].toLowerCase())}">
+        <label>What is it for? (optional hint, e.g. "coding and testing")</label>
+        <input class="e-hint" placeholder="leave blank and Alfred decides from its hardware">
+        <label>Capabilities (Alfred fills this in; edit if you like)</label>
+        <textarea class="e-caps" rows="2" placeholder="press Suggest"></textarea>
+        <div class="row">
+          <button class="e-suggest">Suggest</button>
+          <button class="e-assign primary">Assign</button>
+          <button class="e-cancel">Cancel</button>
+          <span class="tag e-msg"></span>
+        </div>`;
+      div.appendChild(form);
+      form.querySelector(".e-cancel").onclick = () => form.remove();
+      form.querySelector(".e-suggest").onclick = () => suggest(form, n.node_id);
+      form.querySelector(".e-assign").onclick = () => assign(form, n.node_id);
+      suggest(form, n.node_id);
+    }
+  }
+  async function suggest(form, nodeId) {
+    const msg = form.querySelector(".e-msg"); msg.textContent = "asking Alfred…";
+    try {
+      const r = await api(`/api/nodes/${encodeURIComponent(nodeId)}/propose`,
+                          {method: "POST", body: {hint: form.querySelector(".e-hint").value}});
+      form.querySelector(".e-caps").value = r.proposal.capabilities.join(", ");
+      if (!form.querySelector(".e-name").value) form.querySelector(".e-name").value = r.proposal.name;
+      msg.textContent = r.proposal.capabilities.length ? "" : "Alfred found nothing this machine can do yet";
+    } catch (err) { msg.textContent = err.message; }
+  }
+  async function assign(form, nodeId) {
+    const msg = form.querySelector(".e-msg"); msg.textContent = "assigning…";
+    const caps = form.querySelector(".e-caps").value.split(/[,\s]+/).filter(Boolean);
+    try {
+      const r = await api(`/api/nodes/${encodeURIComponent(nodeId)}/assign`,
+                          {method: "POST", body: {name: form.querySelector(".e-name").value.trim(), capabilities: caps}});
+      say("sys", r.result); form.remove(); refresh();
+    } catch (err) { msg.textContent = err.message; }
+  }
+
+  function renderActions(actions) {
+    const box = $("actions");
+    if (!actions.length) { box.innerHTML = '<div class="empty">nothing waiting</div>'; return; }
+    box.innerHTML = "";
+    for (const a of actions) {
+      const div = document.createElement("div"); div.className = "action";
+      div.innerHTML = `<p>#${a.id} ${esc(a.description)}</p>
+        <div class="row"><button class="primary" data-ok="${a.id}">Approve</button>
+        <button class="danger" data-no="${a.id}">Decline</button></div>`;
+      box.appendChild(div);
+    }
+    box.querySelectorAll("[data-ok],[data-no]").forEach((b) => {
+      b.onclick = async () => {
+        const id = b.dataset.ok || b.dataset.no, verb = b.dataset.ok ? "approve" : "decline";
+        b.disabled = true;
+        try { const r = await api(`/api/actions/${id}/${verb}`, {method: "POST", body: {}}); say("sys", `Change #${id}: ${r.result}`); }
+        catch (err) { say("err", err.message); }
+        refresh();
+      };
+    });
+  }
+
+  function renderNotices(notices) {
+    const box = $("notices");
+    if (!notices.length) { box.innerHTML = '<div class="empty">none</div>'; return; }
+    box.innerHTML = notices.slice(-8).map((n) => `<div class="notice">${esc(n.body)}</div>`).join("");
+  }
+
+  function renderJoin(bus) {
+    const box = $("join");
+    if (bus.kind !== "nats") {
+      box.innerHTML = `<div class="hint">This desktop runs with <code>[bus] kind = "local"</code>, which is single-machine only. Set <code>kind = "nats"</code> in its config and restart to let other machines join.</div>`;
+      return;
+    }
+    const url = bus.join_url;
+    box.innerHTML = `
+      <div class="hint">On the laptop (or any other machine), once:</div>
+      <pre>git clone https://github.com/Micron2005/Alfred.git
+cd Alfred &amp;&amp; ./install.sh worker</pre>
+      <div class="hint">It finds this desktop by itself and shows up above as “new, waiting for a job”. Click <b>Give it a job</b>. To start it by hand instead: <code>python run_node.py</code>.</div>
+      ${url ? `<div class="hint">If it cannot find the desktop (some Wi-Fi blocks discovery), tell it where:</div><pre>python run_node.py --bus ${esc(url)}</pre>
+      <div class="hint">and make sure this desktop's firewall allows port ${esc(url.split(":").pop())}.</div>` : ""}`;
+  }
+
+  async function refresh() {
+    try {
+      status = await api("/api/status");
+      renderNodes(status.nodes); renderActions(status.pending_actions);
+      renderNotices(status.recent_notices || status.notices); renderJoin(status.bus);
+      const online = status.nodes.filter((n) => n.online).length;
+      $("busline").textContent = `${online} machine${online === 1 ? "" : "s"} online`;
+      const proj = status.projects.find((p) => p.id === status.default_project);
+      $("project").textContent = proj ? `Project: ${proj.name}` : "";
+    } catch (err) {
+      if (err.message !== "locked") $("busline").textContent = "server unreachable";
+    }
+  }
+  $("refresh").onclick = refresh;
+
+  (async () => {
+    const h = await fetch("/api/health").then((r) => r.json()).catch(() => null);
+    if (!h) { say("err", "The server is not answering. Is run_server.py running?"); return; }
+    await loadHistory(); await refresh();
+    setInterval(refresh, 5000);
+  })();
+})();
+</script>
+</body>
+</html>

@@ -342,6 +342,13 @@ class State:
         return [dict(r) for r in self.db.execute(
             "SELECT * FROM notices WHERE delivered_at IS NULL ORDER BY created_at")]
 
+    def recent_notices(self, limit: int = 8) -> list[dict]:
+        """Delivered or not, the last few, oldest first: a panel that only
+        showed undelivered ones would go blank the moment Alfred speaks."""
+        rows = self.db.execute(
+            "SELECT * FROM notices ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in reversed(rows)]
+
     def mark_delivered(self, ids: list[int]) -> None:
         if ids:
             self.db.executemany(

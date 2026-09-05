@@ -53,6 +53,7 @@ class Alfred:
         self._bg_tasks: set = set()   # background learners, kept referenced
         self._online_nodes: set[str] = set()   # heartbeating machines, last tick
         self._offline_nodes: set[str] = set()  # assigned machines absent, last tick
+        self._assigned_seen: set[str] | None = None  # assignments known last tick
 
     # ---- dispatch --------------------------------------------------------
 
@@ -380,8 +381,8 @@ class Alfred:
             if not result.ok:
                 continue
             where = "" if result.worker_id in {local_worker_id, ""} else f"  (on {result.worker_id})"
-            files += [url2pathname(urlparse(u).path) + where
-                      for u in result.artifacts if u.startswith("file:")]
+            paths = [url2pathname(urlparse(u).path) for u in result.artifacts if u.startswith("file:")]
+            files += [p + where for p in paths if p not in reply]  # the model may have named it already
         if files:
             extra.append("Files:\n" + "\n".join(f"  {p}" for p in files))
         return reply if not extra else reply.rstrip() + "\n\n" + "\n\n".join(extra)
@@ -682,8 +683,13 @@ class Alfred:
                               f"{assigned[node_id].get('name') or node_id} went offline")
         for node_id in online & self._offline_nodes:
             self.state.notice("node_online", f"{live[node_id].worker_id} is back online")
+        # A machine enrolled this tick has not "gone" anywhere: its first
+        # heartbeat is a join (already announced), not a return. Likewise the
+        # first tick after boot, before anyone has had time to heartbeat.
+        fresh = set(assigned) if self._assigned_seen is None else set(assigned) - self._assigned_seen
         self._online_nodes = online
-        self._offline_nodes = set(assigned) - online
+        self._offline_nodes = set(assigned) - online - fresh
+        self._assigned_seen = set(assigned)
 
         cutoff = time.time() - STALE_PROJECT_DAYS * 86400
         for project in self.state.active_projects():
