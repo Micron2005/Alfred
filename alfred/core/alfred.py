@@ -317,6 +317,10 @@ class Alfred:
                 probe = " ".join(draft.split())[:60]
                 if probe and probe not in " ".join(reply.split()):
                     extra.append(draft)
+            if task.capability == "research.web" and result.ok:
+                missing = [u for u in result.data.get("fetched", []) if u not in reply]
+                if missing:
+                    extra.append("Sources read:\n" + "\n".join(f"  {u}" for u in missing))
         files = [url2pathname(urlparse(u).path)
                  for task in tasks if results[task.id].ok
                  for u in results[task.id].artifacts if u.startswith("file:")]

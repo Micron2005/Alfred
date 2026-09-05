@@ -184,6 +184,9 @@ async def research_web(task: Task, cfg: dict) -> TaskResult:
         for url in urls[:8]:
             try:
                 resp = await client.get(url)
+                if resp.status_code >= 400:
+                    pages.append(f"[{url}] fetch failed: HTTP {resp.status_code}")
+                    continue
                 text = _visible_text(resp.text) if "html" in resp.headers.get(
                     "content-type", "html") else resp.text
                 pages.append(f"[{url}]\n{text[:PAGE_CHARS]}")
@@ -194,7 +197,10 @@ async def research_web(task: Task, cfg: dict) -> TaskResult:
     findings = await llm.complete(
         f"Question: {task.prompt}\n\nSources:\n" + "\n\n".join(pages) + "\n\n"
         "Give findings in under 300 words. Attach the source URL to every "
-        "claim. State plainly what remains unanswered.",
+        "claim. For prices, plans or specs, a vendor's own page outranks any "
+        "third-party page; where only third parties were read, say the figure "
+        "is second-hand and may be out of date. State plainly what remains "
+        "unanswered.",
         cfg,
         system=EXTRACT_SYSTEM,
     )

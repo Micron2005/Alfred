@@ -388,7 +388,8 @@ async def marketing_audit(task: Task, cfg: dict) -> TaskResult:
     path.write_text(report)
 
     summary = (
-        f"{final_url}: {len(issues)} mechanical issue(s).\n"
+        f"{final_url}: {len(issues)} mechanical issue(s), each measured from the "
+        "live page just now (these are facts, not opinions).\n"
         + "\n".join(f"- {i}" for i in issues[:8])
         + (f"\n- ...and {len(issues) - 8} more in {path.name}" if len(issues) > 8 else "")
         + "\n\nMessage: " + critique
