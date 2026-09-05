@@ -15,10 +15,16 @@ there is one Alfred — two simultaneous conversations would interleave his
 memory writes.
 
 Endpoints:
-    GET  /                    the shell
+    GET  /                    the Micron OS shell if installed, else Alfred's own panel
+    GET  /panel               Alfred's own panel: chat, machines, approvals, enrolment
     POST /api/chat            {"message": str, "project_id": str|null}
-    GET  /api/status          machines, projects, undelivered notices
+    GET  /api/history         recent conversation turns
+    GET  /api/status          machines, projects, notices (undelivered + recent)
     GET  /api/health          liveness for systemd
+
+The panel is one dependency-free HTML file in panel/. It is not the house --
+Micron OS remains the shell -- it is the butler's own door, so a desktop
+without Micron OS still gets a page instead of a terminal.
 """
 
 from __future__ import annotations
@@ -29,6 +35,8 @@ import json
 import logging
 import signal
 import threading
+import time
+import webbrowser
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -36,15 +44,16 @@ from pathlib import Path
 from alfred.bus import connect_core
 from alfred.bus.discovery import beacon
 from alfred.bus.hosting import stop_server
-from alfred.bus.nats_bus import BusUnreachable
+from alfred.bus.nats_bus import BusUnreachable, host_port
 from alfred.config import load
 from alfred.contracts import Assignment
 from alfred.core.alfred import Alfred
 from alfred.worker.runtime import WorkerRuntime
-from alfred import shell_lock
+from alfred import shell_lock, wsl
 
 log = logging.getLogger("alfred.server")
 SHELL = Path(__file__).parent / "shell" / "index.html"
+PANEL = Path(__file__).parent / "panel" / "index.html"
 LOGIN_HTML = (Path(__file__).parent / "shell" / "login.html").read_text() \
     if (Path(__file__).parent / "shell" / "login.html").exists() else "<h1>Micron OS locked</h1>"
 APPS_DIR = Path(__file__).parent / "apps"
@@ -73,6 +82,34 @@ class Bridge:
         self._talk_lock = asyncio.Lock()
         self.default_project: str | None = None
         self.join_url: str | None = None   # how other machines reach the bus
+        self._door: dict | None = None      # WSL: is Windows forwarding the bus port?
+        self._door_at = 0.0
+
+    @property
+    def bus_port(self) -> int:
+        return host_port(self.alfred.cfg["bus"].get("url", "nats://127.0.0.1:4222"))[1]
+
+    async def door(self, refresh: bool = False) -> dict | None:
+        """Under WSL, whether the LAN can reach the bus we host. Asking
+        Windows costs a PowerShell round trip, so the answer is kept a minute."""
+        if not (wsl.is_wsl() and self.join_url):
+            return None
+        if refresh or self._door is None or time.time() - self._door_at > 60:
+            self._door = await wsl.bridge_status(self.bus_port)
+            self._door_at = time.time()
+        return self._door
+
+    def open_door(self) -> dict:
+        async def _open() -> dict:
+            ok, detail = await wsl.bridge(self.bus_port)
+            await self.door(refresh=True)
+            return {"ok": ok, "detail": detail, "wsl": self._door}
+        future = asyncio.run_coroutine_threadsafe(_open(), self.loop)
+        return future.result(timeout=150)
+
+    def set_eyes(self, open_: bool) -> dict:
+        self.alfred.sight.set_open(open_)
+        return self.alfred.sight.status()
 
     def chat(self, message: str, project_id: str | None,
              attachments: list[str] | None = None) -> str:
@@ -168,11 +205,14 @@ class Bridge:
             ]
             return {
                 "pending_actions": self.alfred.state.pending_actions(),
-                "bus": {"kind": self.alfred.cfg["bus"]["kind"], "join_url": self.join_url},
+                "bus": {"kind": self.alfred.cfg["bus"]["kind"], "join_url": self.join_url,
+                        "wsl": await self.door()},
+                "eyes": self.alfred.sight.status(),
                 "nodes": nodes,
                 "workers": workers,
                 "projects": self.alfred.state.active_projects(),
                 "notices": self.alfred.state.undelivered(),
+                "recent_notices": self.alfred.state.recent_notices(),
                 "default_project": self.default_project,
             }
 
@@ -203,16 +243,21 @@ def make_handler(bridge: Bridge):
                 self._json(200, {"ok": True, "locked": shell_lock.is_set()})
                 return
             if shell_lock.is_set() and not self._authed():
-                if self.path in {"/", "/index.html"}:
+                if self.path == "/panel" or (self.path in {"/", "/index.html"} and not SHELL.exists()):
+                    self._send(200, PANEL.read_bytes(), "text/html; charset=utf-8")  # asks for the password itself
+                elif self.path in {"/", "/index.html"}:
                     self._send(200, LOGIN_HTML.encode(), "text/html; charset=utf-8")
                 else:
                     self._json(401, {"error": "locked"})
                 return
-            if self.path in {"/", "/index.html"}:
-                if SHELL.exists():
-                    self._send(200, SHELL.read_bytes(), "text/html; charset=utf-8")
-                else:
-                    self._send(200, b"Micron OS shell missing; API is up.", "text/plain")
+            if self.path == "/panel" or (self.path in {"/", "/index.html"} and not SHELL.exists()):
+                self._send(200, PANEL.read_bytes(), "text/html; charset=utf-8")
+            elif self.path in {"/", "/index.html"}:
+                self._send(200, SHELL.read_bytes(), "text/html; charset=utf-8")
+            elif self.path == "/api/history":
+                self._json(200, {"turns": bridge.alfred.state.recent_turns(limit=40)})
+            elif self.path == "/api/eyes":
+                self._json(200, bridge.alfred.sight.status())
             elif self.path == "/api/status":
                 try:
                     self._json(200, bridge.status())
@@ -388,6 +433,26 @@ def make_handler(bridge: Bridge):
                 except Exception as exc:
                     self._json(500, {"error": str(exc)})
                 return
+            if self.path == "/api/eyes":
+                # The owner's switch, same as saying "look away" / "eyes on".
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length) or b"{}")
+                    self._json(200, bridge.set_eyes(bool(payload.get("open", True))))
+                except Exception as exc:
+                    self._json(500, {"error": str(exc)})
+                return
+            if self.path == "/api/bridge":
+                # WSL only: ask Windows (one UAC prompt) to forward the bus
+                # port into this VM and allow it through the firewall.
+                if not wsl.is_wsl():
+                    self._json(400, {"error": "not running inside WSL"})
+                    return
+                try:
+                    self._json(200, bridge.open_door())
+                except Exception as exc:
+                    self._json(500, {"error": str(exc)})
+                return
             m = _re.match(r"^/api/nodes/([\w.-]+)/(propose|assign)$", self.path)
             if m:
                 # Giving a machine a job, from the shell rather than the REPL:
@@ -496,6 +561,8 @@ async def main() -> None:
     ap.add_argument("--host", default="127.0.0.1",
                     help="0.0.0.0 to reach the shell from other machines")
     ap.add_argument("--project", default=None, help="default project id for the shell")
+    ap.add_argument("--open", action="store_true",
+                    help="open the page in the default browser once the server is up")
     args = ap.parse_args()
 
     logging.basicConfig(
@@ -524,17 +591,26 @@ async def main() -> None:
             )
         )
 
-    background = [asyncio.create_task(alfred.supervise())]
+    background = [asyncio.create_task(alfred.supervise()),
+                  asyncio.create_task(alfred.sight.run())]
     if join_url:
         background.append(asyncio.create_task(beacon(join_url)))
         log.info("bus at %s; other machines: python run_node.py --bus %s (or --bus auto)",
                  join_url, join_url)
+        door = await bridge.door()
+        if door and not door["ok"]:
+            log.warning("WSL: %s — other machines cannot reach the bus until Windows "
+                        "forwards it; use the panel's 'Open the door' button", door["detail"])
     if cfg["worker"]["capabilities"]:
         background.append(asyncio.create_task(WorkerRuntime(bus, cfg).run()))
 
     httpd = ThreadingHTTPServer((args.host, args.port), make_handler(bridge))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    log.info("Micron OS shell at http://%s:%d", args.host, args.port)
+    page_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
+    log.info("%s at http://%s:%d", "Micron OS shell" if SHELL.exists() else "Alfred's panel",
+             page_host, args.port)
+    if args.open:
+        webbrowser.open(f"http://{page_host}:{args.port}/")
 
     stop = asyncio.Event()
     try:
