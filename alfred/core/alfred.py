@@ -56,6 +56,7 @@ class Alfred:
         self._offline_nodes: set[str] = set()  # assigned machines absent, last tick
         self._assigned_seen: set[str] | None = None  # assignments known last tick
         self._talking = False   # a reply is being composed; the eyes hold still
+        self._asked_at = 0.0    # when the message being answered arrived
         self.sight = Sight(cfg, self.state, busy=lambda: self._talking)
 
     # ---- dispatch --------------------------------------------------------
@@ -293,6 +294,7 @@ class Alfred:
 
     async def converse(self, message: str, project_id: str | None = None,
                        attachments: list[str] | None = None) -> str:
+        self._asked_at = time.time()
         switched = self.sight.command(message)
         if switched:
             self._remember(message, switched, [])
@@ -465,7 +467,7 @@ class Alfred:
         self.history.append(("User", message))
         self.history.append(("Alfred", reply))
         self.history = self.history[-12:]
-        self.state.log_turn("User", message)
+        self.state.log_turn("User", message, at=self._asked_at)
         self.state.log_turn("Alfred", reply)
         self.state.mark_delivered([n["id"] for n in delivered])
 
