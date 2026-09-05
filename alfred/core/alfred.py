@@ -335,23 +335,32 @@ class Alfred:
         whole of what "there is only one Alfred" means in code.
         """
         recent = "\n".join(f"{who}: {what}" for who, what in self.history[-6:])
-        body = "\n\n".join(findings) if findings else (
-            "(none needed — this is conversation, answer it directly and naturally, "
-            "and do not mention tasks or workers. The one exception: if the user "
-            "asked for something to be done or made, nothing was, so say so plainly "
-            "and say what is needed — never claim it was done.)"
-        )
-        prompt = (
-            f"{briefing}\n\nRecent conversation:\n{recent}\n\n"
-            f"User: {message}\n\nWorker results for this message:\n{body}\n\n"
-            "Reply to the user about THIS message only. Lead with the answer. "
-            "State plainly anything in this message's worker results that "
-            "failed or is unverified — do not paper over it; if nothing did, "
-            "say nothing about failures at all. Older failures "
-            "and earlier topics were already reported; do not repeat them "
-            "unless the user asks. If a decision was made, say what it was "
-            "and why."
-        )
+        if findings:
+            body = "\n\n".join(findings)
+            prompt = (
+                f"{briefing}\n\nRecent conversation:\n{recent}\n\n"
+                f"User: {message}\n\nWorker results for this message:\n{body}\n\n"
+                "Reply to the user about THIS message only. Lead with the answer. "
+                "State plainly anything in this message's worker results that "
+                "failed or is unverified — do not paper over it; if nothing did, "
+                "say nothing about failures at all. Older failures "
+                "and earlier topics were already reported; do not repeat them "
+                "unless the user asks. If a decision was made, say what it was "
+                "and why."
+            )
+        else:
+            # Plain conversation. No worker ran, and the reply must neither
+            # mention that machinery nor pretend anything was done.
+            prompt = (
+                f"{briefing}\n\nRecent conversation:\n{recent}\n\n"
+                f"User: {message}\n\n"
+                "Reply to the user directly and naturally, as in conversation; "
+                "never mention tasks, workers or requests. Nothing was done, made "
+                "or looked up for this message — if the user asked for that, say "
+                "so plainly and say what you would need, or that it is beyond you; "
+                "never imply it happened. Earlier topics were already dealt with; "
+                "do not bring them back up unless asked."
+            )
         return await llm.complete(prompt, self.cfg, system=self.persona, timeout=600)
 
     def _remember(self, message: str, reply: str, delivered: list[dict]) -> None:
