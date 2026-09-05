@@ -29,9 +29,10 @@ from alfred.contracts import (
     Assignment, NodeProfile, Task, TaskResult, WorkerAdvert, _new_id,
 )
 from alfred.core import enrollment, planner, scheduler
+from alfred.core.sight import Sight
+from alfred.core.state import State
 from alfred.probe import node_id as local_node_id
 from alfred.worker.handlers import registered_capabilities
-from alfred.core.state import State
 
 log = logging.getLogger("alfred.core")
 
@@ -54,6 +55,8 @@ class Alfred:
         self._online_nodes: set[str] = set()   # heartbeating machines, last tick
         self._offline_nodes: set[str] = set()  # assigned machines absent, last tick
         self._assigned_seen: set[str] | None = None  # assignments known last tick
+        self._talking = False   # a reply is being composed; the eyes hold still
+        self.sight = Sight(cfg, self.state, busy=lambda: self._talking)
 
     # ---- dispatch --------------------------------------------------------
 
@@ -290,10 +293,22 @@ class Alfred:
 
     async def converse(self, message: str, project_id: str | None = None,
                        attachments: list[str] | None = None) -> str:
+        switched = self.sight.command(message)
+        if switched:
+            self._remember(message, switched, [])
+            return switched
+        self._talking = True
+        try:
+            return await self._converse(message, project_id, attachments)
+        finally:
+            self._talking = False
+
+    async def _converse(self, message: str, project_id: str | None,
+                        attachments: list[str] | None) -> str:
         briefing = self.state.briefing(project_id) if project_id else ""
-        owner = self._owner_briefing()
-        if owner:
-            briefing = (owner + "\n\n" + briefing) if briefing else owner
+        for part in (self._owner_briefing(), self.sight.briefing()):
+            if part:
+                briefing = (briefing + "\n\n" + part) if briefing else part
 
         # Anything the supervisor noticed while you were away.
         pending = self.state.undelivered()
@@ -309,6 +324,12 @@ class Alfred:
         offline: dict[str, str] = {}
         if attachments:
             tasks = self._attachment_tasks(attachments, message, available=set(available))
+        elif self._asks_about_own_screen(message):
+            # A fresh look beats a twenty-second-old glance, and the owner's
+            # own screen never goes through the planner or a worker.
+            reply = await self._speak(message, briefing, [await self._fresh_look(message)])
+            self._remember(message, reply, pending)
+            return reply
         elif self._might_need_work(message):
             # Only consult the planner when the message plausibly asks for
             # something a worker does. Plain conversation skips it entirely
@@ -355,6 +376,24 @@ class Alfred:
         self._remember(message, reply, pending)
         self._learn_in_background(message)
         return reply
+
+    def _asks_about_own_screen(self, message: str) -> bool:
+        """"What's on my screen?" -- but "what's on the zenbook's screen" is a
+        request about another machine and goes to the planner as before."""
+        if not self.sight.watching or not self.sight.asks_about_screen(message):
+            return False
+        m = message.lower()
+        others = (self._online_nodes | self._offline_nodes) - {self.local_node_id}
+        return not any(n.lower() in m for n in others)
+
+    async def _fresh_look(self, question: str) -> str:
+        try:
+            seen = await self.sight.glance(question)
+        except Exception as exc:
+            return ("[eyes] FAILED (could not look at the screen just now)\n"
+                    f"{exc}")
+        return ("[eyes] OK (a fresh look at the owner's screen, taken just now; "
+                f"answer from this, not from older glances)\n{seen}")
 
     @staticmethod
     def _attach_deliverables(reply: str, tasks: list[Task],

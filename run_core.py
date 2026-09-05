@@ -160,7 +160,8 @@ async def main() -> None:
         project_id = alfred.state.create_project(args.new_project)
         print(f"created project {project_id}")
 
-    background = [asyncio.create_task(alfred.supervise())]
+    background = [asyncio.create_task(alfred.supervise()),
+                  asyncio.create_task(alfred.sight.run())]
     if join_url:
         background.append(asyncio.create_task(beacon(join_url)))
         print(f"Bus is up at {join_url}. Other machines join with:\n"

@@ -6,80 +6,118 @@
 <title>Alfred</title>
 <style>
   :root {
-    --bg: #14161a; --panel: #1c1f25; --line: #2a2e36; --text: #e6e6e6;
-    --dim: #8b919c; --ok: #4cc38a; --off: #e5484d; --warn: #f5a524; --accent: #6ea8fe;
-    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; font-size: 15px;
+    --bg: #04070b; --panel: #070c12; --panel2: #0a1119; --line: #0f2a3a; --line2: #16465e;
+    --text: #cfe9f5; --dim: #5f8ba0; --ok: #2fd6ff; --off: #ff4d5e; --warn: #ffb020; --accent: #2fd6ff;
+    --glow: 0 0 10px rgba(47,214,255,.35);
+    font-family: "Segoe UI", Roboto, system-ui, sans-serif; font-size: 15px;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); height: 100vh; display: flex; }
-  aside { width: 340px; min-width: 300px; border-right: 1px solid var(--line); overflow-y: auto;
-          background: var(--panel); display: flex; flex-direction: column; }
+  body { margin: 0; color: var(--text); height: 100vh; display: flex; position: relative;
+         background: radial-gradient(ellipse at 50% -20%, #0b1e2d 0%, var(--bg) 55%, #02040a 100%); }
+  /* faint scanlines over everything: the console is a screen, not a page */
+  body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 5; opacity: .18;
+    background: repeating-linear-gradient(180deg, transparent 0 2px, rgba(0,0,0,.55) 2px 3px); }
+  aside { width: 340px; min-width: 300px; border-right: 1px solid var(--line2); overflow-y: auto;
+          background: linear-gradient(180deg, var(--panel2), var(--panel)); display: flex; flex-direction: column; }
   main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-  h1 { font-size: 17px; margin: 0; padding: 16px 18px 8px; letter-spacing: .3px; }
-  h1 small { color: var(--dim); font-weight: normal; font-size: 12px; margin-left: 8px; }
+  h1 { font-size: 15px; margin: 0; padding: 16px 18px 10px; letter-spacing: 4px; text-transform: uppercase;
+       color: var(--accent); text-shadow: var(--glow); border-bottom: 1px solid var(--line2);
+       font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  h1 small { color: var(--dim); font-weight: normal; font-size: 11px; margin-left: 8px; letter-spacing: 1px; text-shadow: none; }
   section { padding: 10px 18px 14px; border-bottom: 1px solid var(--line); }
-  section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim);
-               margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; }
+  section h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: var(--accent);
+               margin: 0 0 8px; display: flex; align-items: center; gap: 6px;
+               font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  section h2::before { content: "//"; color: var(--dim); }
+  section h2 button { margin-left: auto; }
   .node { padding: 8px 0; border-top: 1px solid var(--line); }
   .node:first-of-type { border-top: 0; }
   .row { display: flex; align-items: center; gap: 8px; }
-  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--off); flex: none; }
-  .dot.on { background: var(--ok); }
-  .dot.new { background: var(--warn); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--off); flex: none; box-shadow: 0 0 6px var(--off); }
+  .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot.new { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
   .name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tag { color: var(--dim); font-size: 12px; white-space: nowrap; }
+  .tag { color: var(--dim); font-size: 12px; white-space: nowrap; font-family: ui-monospace, Consolas, monospace; }
   .row button { flex: none; white-space: nowrap; }
-  .caps { color: var(--dim); font-size: 12px; margin-top: 3px; line-height: 1.5; word-break: break-word; }
-  button { background: #2b3038; color: var(--text); border: 1px solid var(--line); border-radius: 6px;
-           padding: 5px 10px; font-size: 13px; cursor: pointer; }
-  button:hover { border-color: var(--accent); }
-  button.primary { background: var(--accent); color: #0b1020; border-color: var(--accent); font-weight: 600; }
-  button.danger { border-color: var(--off); }
-  button:disabled { opacity: .5; cursor: default; }
-  input, textarea { background: #0f1115; color: var(--text); border: 1px solid var(--line);
-                    border-radius: 6px; padding: 8px 10px; font: inherit; width: 100%; }
+  .caps { color: var(--dim); font-size: 12px; margin-top: 3px; line-height: 1.5; word-break: break-word;
+          font-family: ui-monospace, Consolas, monospace; }
+  button { background: rgba(47,214,255,.06); color: var(--accent); border: 1px solid var(--line2); border-radius: 3px;
+           padding: 5px 11px; font-size: 12px; cursor: pointer; text-transform: uppercase; letter-spacing: 1px;
+           font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; transition: box-shadow .15s, border-color .15s; }
+  button:hover { border-color: var(--accent); box-shadow: var(--glow); }
+  button.primary { background: var(--accent); color: #03131a; border-color: var(--accent); font-weight: 700; box-shadow: var(--glow); }
+  button.danger { border-color: var(--off); color: var(--off); }
+  button:disabled { opacity: .4; cursor: default; box-shadow: none; }
+  input, textarea { background: #03080d; color: var(--text); border: 1px solid var(--line2);
+                    border-radius: 3px; padding: 8px 10px; font: inherit; width: 100%; }
+  input:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: var(--glow); }
   textarea { resize: none; }
-  .enroll { margin-top: 8px; padding: 10px; background: #0f1115; border-radius: 8px; display: grid; gap: 6px; min-width: 0; }
+  .enroll { margin-top: 8px; padding: 10px; background: #03080d; border: 1px solid var(--line); border-radius: 3px;
+            display: grid; gap: 6px; min-width: 0; }
   .enroll .row { flex-wrap: wrap; }
   .enroll input, .enroll textarea { min-width: 0; }
   .enroll label { font-size: 12px; color: var(--dim); }
   .empty { color: var(--dim); font-size: 13px; padding: 4px 0; }
   .action { padding: 8px 0; border-top: 1px solid var(--line); }
   .action p { margin: 0 0 6px; font-size: 14px; }
-  .notice { font-size: 13px; padding: 4px 0; color: #c9ced6; border-top: 1px solid var(--line); }
+  .notice { font-size: 13px; padding: 4px 0; color: #a9c9d8; border-top: 1px solid var(--line); }
   .notice:first-of-type { border-top: 0; }
-  pre { background: #0f1115; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px;
-        font-size: 12.5px; overflow-x: auto; margin: 6px 0; white-space: pre-wrap; }
+  pre { background: #03080d; border: 1px solid var(--line2); border-left: 3px solid var(--accent); border-radius: 3px;
+        padding: 8px 10px; font-size: 12.5px; overflow-x: auto; margin: 6px 0; white-space: pre-wrap; color: #9fe8ff; }
+  code { color: #9fe8ff; }
   .hint { color: var(--dim); font-size: 12.5px; line-height: 1.5; margin: 4px 0; }
 
   #log { flex: 1; overflow-y: auto; padding: 22px 8% 10px; }
-  .msg { max-width: 820px; margin: 0 auto 16px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
-  .msg.you { color: var(--accent); }
-  .msg.you::before { content: "You"; display: block; font-size: 11px; text-transform: uppercase;
-                     letter-spacing: 1px; color: var(--dim); margin-bottom: 2px; }
-  .msg.alfred::before { content: "Alfred"; display: block; font-size: 11px; text-transform: uppercase;
-                        letter-spacing: 1px; color: var(--dim); margin-bottom: 2px; }
-  .msg.sys { color: var(--dim); font-size: 13px; text-align: center; }
-  .msg.err { color: var(--off); }
-  form#ask { display: flex; gap: 8px; padding: 12px 8% 18px; border-top: 1px solid var(--line); }
+  .msg { max-width: 820px; margin: 0 auto 16px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+         padding-left: 12px; border-left: 2px solid var(--line2); }
+  .msg.you { color: #9fe8ff; border-left-color: var(--accent); }
+  .msg.you::before, .msg.alfred::before { display: block; font-size: 10px; text-transform: uppercase;
+    letter-spacing: 2px; color: var(--dim); margin-bottom: 2px; font-family: ui-monospace, Consolas, monospace; }
+  .msg.you::before { content: "You"; }
+  .msg.alfred::before { content: "Alfred"; }
+  .msg.sys { color: var(--dim); font-size: 12px; text-align: center; border-left: 0; padding-left: 0;
+             font-family: ui-monospace, Consolas, monospace; letter-spacing: 1px; text-transform: uppercase; }
+  .msg.err { color: var(--off); border-left-color: var(--off); }
+  form#ask { display: flex; gap: 8px; padding: 12px 8% 18px; border-top: 1px solid var(--line2);
+             background: linear-gradient(180deg, rgba(47,214,255,.03), transparent); }
   form#ask textarea { flex: 1; height: 56px; }
-  form#ask button { height: 56px; padding: 0 20px; }
+  form#ask button { height: 56px; padding: 0 22px; }
   .thinking { color: var(--dim); font-style: italic; }
+  .thinking::after { content: "_"; animation: cursor 1s steps(1) infinite; }
+  @keyframes cursor { 50% { opacity: 0; } }
   #topbar { display: flex; justify-content: space-between; align-items: center; padding: 10px 8%;
-            border-bottom: 1px solid var(--line); font-size: 13px; color: var(--dim); }
-  #topbar a { color: var(--dim); cursor: pointer; text-decoration: underline; }
+            border-bottom: 1px solid var(--line2); font-size: 12px; color: var(--dim); letter-spacing: 1px;
+            text-transform: uppercase; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+            background: linear-gradient(180deg, rgba(47,214,255,.05), transparent); }
+  #topbar a { color: var(--dim); cursor: pointer; text-decoration: none; }
+  #topbar a:hover { color: var(--accent); }
+  #clock { color: var(--accent); text-shadow: var(--glow); }
+  #eyes { display: inline-flex; align-items: center; gap: 8px; }
+  .eye { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); flex: none; }
+  .eye.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); animation: blink 2.4s infinite; }
+  .eye.closed { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+  @keyframes blink { 0% { box-shadow: 0 0 8px var(--ok), 0 0 0 0 rgba(47,214,255,.6); }
+                     70% { box-shadow: 0 0 8px var(--ok), 0 0 0 8px rgba(47,214,255,0); }
+                     100% { box-shadow: 0 0 8px var(--ok), 0 0 0 0 rgba(47,214,255,0); } }
+  .glance { color: #a9c9d8; font-size: 13px; line-height: 1.45; margin-top: 6px; }
+  .warnbox { border: 1px solid var(--warn); border-left-width: 3px; border-radius: 3px; padding: 8px 10px; margin: 6px 0;
+             font-size: 13px; line-height: 1.5; background: rgba(255,176,32,.05); }
+  .warnbox b { color: var(--warn); }
 
   #login { position: fixed; inset: 0; background: var(--bg); display: none; align-items: center;
            justify-content: center; z-index: 10; }
-  #login form { width: 320px; display: grid; gap: 10px; }
-  #login h2 { margin: 0 0 6px; font-size: 18px; }
-  @media (max-width: 800px) { body { flex-direction: column; } aside { width: auto; min-width: 0;
-    max-height: 45vh; border-right: 0; border-bottom: 1px solid var(--line); } }
+  #login form { width: 340px; display: grid; gap: 10px; padding: 26px; border: 1px solid var(--line2);
+                border-radius: 3px; box-shadow: var(--glow); background: var(--panel); }
+  #login h2 { margin: 0 0 6px; font-size: 13px; letter-spacing: 4px; text-transform: uppercase; color: var(--accent);
+              text-shadow: var(--glow); font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  @media (max-width: 800px) { body { flex-direction: column; } aside { width: auto; min-width: 0; flex: none;
+    max-height: 45vh; border-right: 0; border-bottom: 1px solid var(--line2); } main { min-height: 0; } }
 </style>
 </head>
 <body>
 <div id="login"><form id="loginform">
-  <h2>Alfred is locked</h2>
+  <h2>Access restricted</h2>
+  <div class="hint">Alfred is locked. Identify yourself.</div>
   <input type="password" id="pw" placeholder="password" autofocus>
   <button class="primary" type="submit">Unlock</button>
   <div class="hint" id="loginerr"></div>
@@ -91,6 +129,16 @@
   <section>
     <h2>Machines <button id="refresh" title="refresh now">↻</button></h2>
     <div id="nodes"><div class="empty">connecting…</div></div>
+  </section>
+
+  <section>
+    <h2>Eyes</h2>
+    <div class="hint" id="eyesline">…</div>
+    <div class="row" style="margin-top:6px">
+      <button id="eyestoggle">Look away</button>
+      <button id="lookbtn" title="Alfred takes a fresh look and tells you what he sees">What's on my screen?</button>
+    </div>
+    <div class="glance" id="glance"></div>
   </section>
 
   <section>
@@ -120,7 +168,8 @@
 
 <main>
   <div id="topbar">
-    <span id="project"></span>
+    <span><span id="clock"></span> <span id="project"></span></span>
+    <span id="eyes" title="Whether Alfred is looking at this screen right now"><span class="eye"></span><span id="eyestext">eyes: …</span></span>
     <span><a id="clearlog">clear screen</a></span>
   </div>
   <div id="log"></div>
@@ -189,9 +238,8 @@
       if (!h.turns.length) say("sys", "Say hello. Alfred is listening.");
     } catch (err) { if (err.message !== "locked") say("err", err.message); }
   }
-  $("ask").onsubmit = async (e) => {
-    e.preventDefault();
-    const text = $("text").value.trim();
+  $("ask").onsubmit = (e) => { e.preventDefault(); send($("text").value.trim()); };
+  async function send(text) {
     if (!text || busy) return;
     busy = true; $("send").disabled = true; $("text").value = "";
     say("you", text);
@@ -202,7 +250,7 @@
     } catch (err) {
       pending.className = "msg err"; pending.textContent = err.message === "locked" ? "Locked; unlock and send again." : "Alfred could not answer: " + err.message;
     } finally { busy = false; $("send").disabled = false; $("text").focus(); refresh(); }
-  };
+  }
   $("text").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("ask").requestSubmit(); } };
   $("clearlog").onclick = () => { $("log").innerHTML = ""; };
 
@@ -310,20 +358,80 @@
     box.innerHTML = notices.slice(-8).map((n) => `<div class="notice">${esc(n.body)}</div>`).join("");
   }
 
+  // ---- eyes -------------------------------------------------------------
+  function renderEyes(eyes) {
+    const dot = $("eyes").querySelector(".eye");
+    let cls = "eye", text, line;
+    if (!eyes || !eyes.enabled) {
+      text = "eyes: off"; line = "Switched off in the config ([sight] enabled = false).";
+    } else if (!eyes.open) {
+      text = "eyes: looking away"; line = "Alfred is not looking at this screen. Nothing is captured until you say “eyes on”.";
+    } else if (!eyes.available) {
+      cls += " closed"; text = "eyes: closed"; line = `Wants to look but cannot: ${eyes.reason}.`;
+    } else {
+      cls += " on";
+      const ago = eyes.last ? `glanced ${eyes.last.ago_s}s ago` : "first glance pending";
+      text = `eyes: on · ${eyes.looking ? "looking…" : ago}`;
+      line = `Glancing at this screen every ${Math.round(eyes.glance_s)}s with ${eyes.model} on this machine. Frames never leave it; seeing grants no permission to act.`;
+    }
+    dot.className = cls; $("eyestext").textContent = text; $("eyesline").textContent = line;
+    $("eyestoggle").textContent = eyes && eyes.open ? "Look away" : "Eyes on";
+    $("eyestoggle").disabled = !eyes || !eyes.enabled;
+    $("lookbtn").disabled = !eyes || !eyes.watching || busy;
+    const g = eyes && eyes.open && eyes.last && !eyes.last.question ? eyes.last : null;
+    $("glance").textContent = g ? `Last glance: ${g.text}` : "";
+  }
+  $("eyestoggle").onclick = async () => {
+    const open = !(status && status.eyes && status.eyes.open);
+    try {
+      const eyes = await api("/api/eyes", {method: "POST", body: {open}});
+      if (status) status.eyes = eyes;
+      renderEyes(eyes);
+      say("sys", open ? "Eyes on." : "Alfred is looking away.");
+    } catch (err) { say("err", err.message); }
+  };
+  $("lookbtn").onclick = () => send("What's on my screen right now?");
+
+  // ---- other machines ---------------------------------------------------
+  function renderDoor(w) {
+    // Inside WSL, the bus lives in a Linux VM Windows has to forward to.
+    if (!w) return "";
+    if (w.ok) return `<div class="hint">Windows: ${esc(w.detail)}.</div>`;
+    return `<div class="warnbox"><b>Other machines cannot reach Alfred yet.</b> ${esc(w.detail)}. Alfred runs inside WSL; Windows has to pass the port through.
+      <div class="row" style="margin-top:6px"><button class="primary" id="opendoor">Open the door</button><span class="tag">Windows will ask for permission once.</span></div></div>`;
+  }
+  let doorBusy = false;   // the UAC prompt can sit for a while; keep the button as it is
+  async function openDoor(btn) {
+    doorBusy = true; btn.disabled = true; btn.textContent = "Asking Windows…";
+    try {
+      const r = await api("/api/bridge", {method: "POST"});
+      say(r.ok ? "sys" : "err", r.ok ? "Door open: " + r.detail + "." : "Could not open the door: " + r.detail + ".");
+    } catch (err) { say("err", err.message); }
+    doorBusy = false; refresh();
+  }
+
   function renderJoin(bus) {
     const box = $("join");
+    if (doorBusy) return;
     if (bus.kind !== "nats") {
       box.innerHTML = `<div class="hint">This desktop runs with <code>[bus] kind = "local"</code>, which is single-machine only. Set <code>kind = "nats"</code> in its config and restart to let other machines join.</div>`;
       return;
     }
     const url = bus.join_url;
+    const port = url ? url.split(":").pop() : "4222";
+    const pinned = bus.wsl && !bus.wsl.auto_works;
     box.innerHTML = `
+      ${renderDoor(bus.wsl)}
       <div class="hint">On the laptop (or any other machine), once:</div>
       <pre>git clone https://github.com/Micron2005/Alfred.git
 cd Alfred &amp;&amp; ./install.sh worker</pre>
-      <div class="hint">It finds this desktop by itself and shows up above as “new, waiting for a job”. Click <b>Give it a job</b>. To start it by hand instead: <code>python run_node.py</code>.</div>
+      ${pinned && url ? `<div class="hint">Discovery does not cross WSL's network boundary, so tell the laptop where this desktop is:</div><pre>python run_node.py --bus ${esc(url)}</pre>
+      <div class="hint">It then shows up above as “new, waiting for a job”. Click <b>Give it a job</b>.</div>`
+      : `<div class="hint">It finds this desktop by itself and shows up above as “new, waiting for a job”. Click <b>Give it a job</b>. To start it by hand instead: <code>python run_node.py</code>.</div>
       ${url ? `<div class="hint">If it cannot find the desktop (some Wi-Fi blocks discovery), tell it where:</div><pre>python run_node.py --bus ${esc(url)}</pre>
-      <div class="hint">and make sure this desktop's firewall allows port ${esc(url.split(":").pop())}.</div>` : ""}`;
+      <div class="hint">and make sure this desktop's firewall allows port ${esc(port)}.</div>` : ""}`}`;
+    const door = $("opendoor");
+    if (door) door.onclick = () => openDoor(door);
   }
 
   async function refresh() {
@@ -331,15 +439,18 @@ cd Alfred &amp;&amp; ./install.sh worker</pre>
       status = await api("/api/status");
       renderNodes(status.nodes); renderActions(status.pending_actions);
       renderNotices(status.recent_notices || status.notices); renderJoin(status.bus);
+      renderEyes(status.eyes);
       const online = status.nodes.filter((n) => n.online).length;
       $("busline").textContent = `${online} machine${online === 1 ? "" : "s"} online`;
       const proj = status.projects.find((p) => p.id === status.default_project);
-      $("project").textContent = proj ? `Project: ${proj.name}` : "";
+      $("project").textContent = proj ? `· project: ${proj.name}` : "";
     } catch (err) {
-      if (err.message !== "locked") $("busline").textContent = "server unreachable";
+      if (err.message !== "locked") { $("busline").textContent = "offline"; $("eyestext").textContent = "eyes: unknown"; }
     }
   }
   $("refresh").onclick = refresh;
+  const tick = () => { $("clock").textContent = new Date().toLocaleTimeString([], {hour12: false}); };
+  tick(); setInterval(tick, 1000);
 
   (async () => {
     const h = await fetch("/api/health").then((r) => r.json()).catch(() => null);

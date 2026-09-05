@@ -73,6 +73,9 @@ CREATE TABLE IF NOT EXISTS nodes (
     node_id TEXT PRIMARY KEY, name TEXT, hostname TEXT, profile TEXT,
     capabilities TEXT, note TEXT, enrolled_at REAL, last_seen REAL);
 
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at REAL);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_notices_undelivered ON notices(delivered_at);
 """
@@ -327,6 +330,21 @@ class State:
         """Which machine covers which capabilities, for proposing a sensible
         role to a newcomer rather than duplicating what is already handled."""
         return {r["name"]: json.loads(r["capabilities"] or "[]") for r in self.nodes()}
+
+    # ---- settings (owner switches that must survive a restart) ---------
+
+    def setting(self, key: str, default: str = "") -> str:
+        row = self.db.execute(
+            "SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        self._write(
+            "INSERT INTO settings (key,value,updated_at) VALUES (?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+            "updated_at=excluded.updated_at",
+            (key, value, time.time()),
+        )
 
     # ---- notices (supervisor -> conversation) ---------------------------
 
