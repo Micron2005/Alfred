@@ -14,7 +14,9 @@ Alfred would only ever discover a finished job because you happened to ask.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -23,8 +25,11 @@ from urllib.request import url2pathname
 
 from alfred import llm
 from alfred.bus.base import Bus
-from alfred.contracts import Assignment, NodeProfile, Task, TaskResult, _new_id
+from alfred.contracts import (
+    Assignment, NodeProfile, Task, TaskResult, WorkerAdvert, _new_id,
+)
 from alfred.core import enrollment, planner, scheduler
+from alfred.probe import node_id as local_node_id
 from alfred.worker.handlers import registered_capabilities
 from alfred.core.state import State
 
@@ -41,10 +46,13 @@ class Alfred:
         self.state = State(cfg["core"]["state_db"])
         self.persona = PERSONA_PATH.read_text() if PERSONA_PATH.exists() else ""
         self.local_worker_id: str = cfg["worker"]["id"]
+        self.local_node_id: str = local_node_id()
         # Conversation survives restarts: the last turns reload so a
         # service restart or self-update does not wipe the thread.
         self.history: list[tuple[str, str]] = list(self.state.recent_turns(6))
         self._bg_tasks: set = set()   # background learners, kept referenced
+        self._online_nodes: set[str] = set()   # heartbeating machines, last tick
+        self._offline_nodes: set[str] = set()  # assigned machines absent, last tick
 
     # ---- dispatch --------------------------------------------------------
 
@@ -110,18 +118,44 @@ class Alfred:
             # future stay intact and the attempt history is readable.
             task = replace(task, id=_new_id("task"), attempt=task.attempt + 1)
 
-    async def _run_graph(self, tasks: list[Task]) -> dict[str, TaskResult]:
+    async def _run_graph(self, tasks: list[Task],
+                         offline: dict[str, str] | None = None) -> dict[str, TaskResult]:
         """Execute the DAG, running everything whose dependencies are met
         concurrently. A flat list would serialise work with no reason to be
-        sequential."""
+        sequential.
+
+        Steps that need a capability only an offline machine offers are
+        refused here, not queued: nothing would claim them, and the owner is
+        better served by "the zenbook is off" now than a timeout later."""
         results: dict[str, TaskResult] = {}
         remaining = {t.id: t for t in tasks}
+        for task in tasks:
+            machine = (offline or {}).get(task.capability)
+            if machine:
+                results[task.id] = TaskResult(
+                    task_id=task.id, worker_id="none", status="rejected",
+                    error=f"needs {task.capability}, which only {machine} offers, "
+                          f"and {machine} is offline; nothing was done",
+                )
+                remaining.pop(task.id)
 
         while remaining:
             ready = [
                 t for t in remaining.values()
                 if all(dep in results for dep in t.depends_on)
             ]
+            for task in ready[:]:
+                blocked = [d for d in task.depends_on
+                           if results[d].status == "rejected" and results[d].worker_id == "none"]
+                if blocked:
+                    results[task.id] = TaskResult(
+                        task_id=task.id, worker_id="none", status="rejected",
+                        error="skipped: depends on a step that could not run",
+                    )
+                    remaining.pop(task.id)
+                    ready.remove(task)
+            if not ready and not remaining:
+                break
             if not ready:
                 for t in remaining.values():
                     results[t.id] = TaskResult(
@@ -195,6 +229,22 @@ class Alfred:
                                   inputs={"path": path}, timeout_s=120))
         return tasks
 
+    async def _offline_hands(self, available: list[str]) -> dict[str, str]:
+        """Capabilities the household has on paper but not on the bus right
+        now, mapped to the machine that offers them: a sleeping Zenbook takes
+        code.write with it. The planner still plans for them so the refusal
+        can name the step and the machine, instead of quietly planning around
+        a hole."""
+        live = await self.live_workers_by_node()
+        out: dict[str, str] = {}
+        for row in self.state.all_nodes():
+            if row["node_id"] in live:
+                continue
+            for cap in json.loads(row.get("capabilities") or "[]"):
+                if cap not in available:
+                    out.setdefault(cap, row.get("name") or row["node_id"])
+        return out
+
     def _owner_briefing(self) -> str:
         """What Alfred currently knows about his employer. The fresh-start
         persona promises he learns you over time; this is where that memory
@@ -254,16 +304,18 @@ class Alfred:
                 + "\n".join(f"  - {n['body']}" for n in pending)
             )
 
+        available = await self._network_capabilities()
+        offline: dict[str, str] = {}
         if attachments:
-            tasks = self._attachment_tasks(
-                attachments, message, available=await self._network_capabilities())
+            tasks = self._attachment_tasks(attachments, message, available=set(available))
         elif self._might_need_work(message):
             # Only consult the planner when the message plausibly asks for
             # something a worker does. Plain conversation skips it entirely
             # and answers in one LLM call instead of two.
+            offline = await self._offline_hands(available)
             tasks = await planner.plan(
                 message, briefing, self.cfg, project_id,
-                available=await self._network_capabilities(),
+                available=sorted(set(available) | set(offline)),
             )
         else:
             tasks = []
@@ -277,7 +329,7 @@ class Alfred:
 
         log.info("plan: %d tasks across %s", len(tasks),
                  ", ".join(sorted({t.capability for t in tasks})))
-        results = await self._run_graph(tasks)
+        results = await self._run_graph(tasks, offline)
 
         # Verify before synthesising, so the report reflects checked work.
         checked: list[str] = []
@@ -298,17 +350,18 @@ class Alfred:
             ))
 
         reply = await self._speak(message, briefing, checked)
-        reply = self._attach_deliverables(reply, tasks, results)
+        reply = self._attach_deliverables(reply, tasks, results, self.local_worker_id)
         self._remember(message, reply, pending)
         self._learn_in_background(message)
         return reply
 
     @staticmethod
     def _attach_deliverables(reply: str, tasks: list[Task],
-                             results: dict[str, TaskResult]) -> str:
+                             results: dict[str, TaskResult], local_worker_id: str) -> str:
         """Copy the owner asked for is handed over in full, however the
         narration treated it, and every file produced is named so he can
-        find it. Small models like to describe a draft instead of pasting it."""
+        find it — including which machine it is on, when that is not this
+        one. Small models like to describe a draft instead of pasting it."""
         extra: list[str] = []
         for task in tasks:
             result = results[task.id]
@@ -321,9 +374,14 @@ class Alfred:
                 missing = [u for u in result.data.get("fetched", []) if u not in reply]
                 if missing:
                     extra.append("Sources read:\n" + "\n".join(f"  {u}" for u in missing))
-        files = [url2pathname(urlparse(u).path)
-                 for task in tasks if results[task.id].ok
-                 for u in results[task.id].artifacts if u.startswith("file:")]
+        files = []
+        for task in tasks:
+            result = results[task.id]
+            if not result.ok:
+                continue
+            where = "" if result.worker_id in {local_worker_id, ""} else f"  (on {result.worker_id})"
+            files += [url2pathname(urlparse(u).path) + where
+                      for u in result.artifacts if u.startswith("file:")]
         if files:
             extra.append("Files:\n" + "\n".join(f"  {p}" for p in files))
         return reply if not extra else reply.rstrip() + "\n\n" + "\n\n".join(extra)
@@ -418,10 +476,25 @@ class Alfred:
 
     # ---- enrollment ------------------------------------------------------
 
+    async def live_workers_by_node(self) -> dict[str, WorkerAdvert]:
+        """Heartbeating workers keyed by the machine they run on."""
+        return {
+            w.node_id or w.worker_id: w
+            for w in await self.bus.workers()
+            if w.capabilities
+        }
+
     async def unassigned_nodes(self) -> list[NodeProfile]:
-        """Machines that have announced themselves but have no job yet."""
+        """Machines that have announced themselves but have no job yet.
+
+        A machine whose worker already heartbeats with capabilities — one
+        started from its own config file rather than enrolled — has a job,
+        and is not nagged about."""
+        working = await self.live_workers_by_node()
         out = []
         for profile in await self.bus.seen_nodes():
+            if profile.node_id in working:
+                continue
             if await self.bus.get_assignment(profile.node_id) is None:
                 out.append(profile)
         return out
@@ -495,16 +568,15 @@ class Alfred:
     async def _write_status(self) -> None:
         """Heartbeat for the dashboard: current household truth to a file the
         status board reads. Best-effort; never breaks supervision."""
-        import json, time, tempfile, os, pathlib
         try:
             now = time.time()
-            workers = {w.worker_id: w for w in await self.bus.workers()}
+            workers = await self.live_workers_by_node()
             seen = {p.node_id: p for p in await self.bus.seen_nodes()}
             nodes = []
             for row in self.state.all_nodes():
                 nid = row["node_id"]
-                last = row.get("last_seen") or 0
-                online = (now - last) < 30 if last else (nid in seen)
+                last = seen[nid].seen_at if nid in seen else (row.get("last_seen") or 0)
+                online = nid in seen or nid in workers
                 try:
                     caps = json.loads(row.get("capabilities") or "[]")
                 except Exception:
@@ -528,7 +600,7 @@ class Alfred:
                 "nodes": nodes,
                 "in_flight": self.state.in_flight_tasks(),
             }
-            path = pathlib.Path.home() / ".alfred" / "status.json"
+            path = Path.home() / ".alfred" / "status.json"
             path.parent.mkdir(exist_ok=True)
             tmp = path.with_suffix(".tmp")
             tmp.write_text(json.dumps(status))
@@ -572,6 +644,46 @@ class Alfred:
                                note="seen, not yet assigned"),
                     profile,
                 )
+
+        # A worker that arrived with its own config file is as much a member
+        # of the household as an enrolled one: record it so /nodes, the
+        # dashboard and the enrollment proposals know what it covers.
+        seen = {p.node_id: p for p in await self.bus.seen_nodes()}
+        live = await self.live_workers_by_node()
+        for node_id, worker in live.items():
+            known = self.state.known_node(node_id)
+            if known and json.loads(known.get("capabilities") or "[]") == worker.capabilities:
+                continue
+            profile = seen.get(node_id)
+            if profile is None:
+                continue
+            if not known and node_id != self.local_node_id:
+                self.state.notice(
+                    "new_node",
+                    f"{worker.worker_id} ({profile.hostname}) joined offering "
+                    f"{', '.join(worker.capabilities)}",
+                )
+            self.state.record_node(
+                Assignment(node_id=node_id, name=worker.worker_id,
+                           capabilities=list(worker.capabilities),
+                           note="configured on the machine itself"),
+                profile,
+            )
+
+        # Comings and goings, once per transition: the owner hears that the
+        # zenbook dropped off before he asks for the work only it can do.
+        online = set(live)
+        assigned = {
+            r["node_id"]: r for r in self.state.all_nodes()
+            if r.get("capabilities") not in (None, "", "[]")
+        }
+        for node_id in (self._online_nodes - online) & set(assigned):
+            self.state.notice("node_offline",
+                              f"{assigned[node_id].get('name') or node_id} went offline")
+        for node_id in online & self._offline_nodes:
+            self.state.notice("node_online", f"{live[node_id].worker_id} is back online")
+        self._online_nodes = online
+        self._offline_nodes = set(assigned) - online
 
         cutoff = time.time() - STALE_PROJECT_DAYS * 86400
         for project in self.state.active_projects():

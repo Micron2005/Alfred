@@ -1,6 +1,7 @@
 """NATS + JetStream bus. Phase 2, when work starts leaving the desktop.
 
-Run the server on the Pi (it is the only always-on box):
+The server runs wherever the brain runs (the desktop hosts it itself, see
+`alfred.bus.hosting`), or on an always-on box such as a Pi:
 
     nats-server -js -sd /var/lib/nats
 
@@ -16,8 +17,11 @@ routing for free.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
+import socket
 import time
+import urllib.parse
 
 from alfred.bus.base import Bus
 from alfred.contracts import Assignment, NodeProfile, Task, TaskResult, WorkerAdvert
@@ -30,6 +34,70 @@ NODE_BUCKET = "alfred_nodes"
 ASSIGN_BUCKET = "alfred_assignments"
 HEARTBEAT_TTL_S = 15
 NODE_TTL_S = 120
+CONNECT_TIMEOUT_S = 5.0
+
+log = logging.getLogger("alfred.bus")
+
+
+class BusUnreachable(ConnectionError):
+    """Nothing is listening at the bus URL. The message says what to check."""
+
+
+def host_port(url: str) -> tuple[str, int]:
+    parsed = urllib.parse.urlparse(url if "://" in url else f"nats://{url}")
+    return parsed.hostname or "127.0.0.1", parsed.port or 4222
+
+
+def is_local_host(host: str) -> bool:
+    if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0", socket.gethostname()}:
+        return True
+    try:
+        return socket.gethostbyname(host) in {"127.0.0.1"} | set(_own_addresses())
+    except OSError:
+        return False
+
+
+def _own_addresses() -> list[str]:
+    try:
+        return [
+            info[4][0]
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+        ]
+    except OSError:
+        return []
+
+
+async def reachable(url: str, timeout: float = CONNECT_TIMEOUT_S) -> str | None:
+    """None if a TCP connection to the bus opens; otherwise the reason."""
+    host, port = host_port(url)
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), timeout
+        )
+    except asyncio.TimeoutError:
+        return f"no answer from {host}:{port} within {timeout:.0f}s (firewall, or wrong address?)"
+    except socket.gaierror:
+        return f"cannot resolve host {host!r}"
+    except OSError as exc:
+        return f"{host}:{port} refused the connection ({exc.strerror or exc})"
+    writer.close()
+    return None
+
+
+def unreachable_hint(url: str) -> str:
+    host, port = host_port(url)
+    if is_local_host(host):
+        return (
+            f"the bus at {url} is not running on this machine. Alfred's core starts "
+            "nats-server itself when the binary is on PATH; install it "
+            "(install.sh does) or start it by hand: nats-server -js -sd ~/.alfred/nats"
+        )
+    return (
+        f"cannot reach the bus at {url}. On the machine running Alfred's core: "
+        f"check that it is up and that port {port} is open to the LAN "
+        f"(e.g. sudo ufw allow {port}/tcp). On this machine: check {host} is the "
+        "core's current address, or use --bus auto to find it by broadcast."
+    )
 
 
 def _durable_name(capability: str) -> str:
@@ -60,13 +128,33 @@ class NatsBus(Bus):
     async def connect(self) -> None:
         if self._nc is not None:
             return
-        import nats  # pip install nats-py
+        try:
+            import nats
+        except ImportError as exc:
+            raise BusUnreachable(
+                "the NATS client is not installed here: pip install nats-py"
+            ) from exc
 
-        self._nc = await nats.connect(
+        reason = await reachable(self.url)
+        if reason:
+            raise BusUnreachable(f"{reason}; {unreachable_hint(self.url)}")
+
+        async def _quiet(exc: Exception) -> None:
+            log.warning("bus: %s", exc)
+
+        async def _reconnected() -> None:
+            log.info("bus: reconnected to %s", self.url)
+
+        nc = await nats.connect(
             self.url,
+            connect_timeout=CONNECT_TIMEOUT_S,
+            drain_timeout=5,  # shutdown should not hang on idle pull subscriptions
             reconnect_time_wait=2,
             max_reconnect_attempts=-1,  # a sleeping laptop is normal, not an error
+            error_cb=_quiet,
+            reconnected_cb=_reconnected,
         )
+        self._nc = nc
         self._js = self._nc.jetstream()
 
         try:

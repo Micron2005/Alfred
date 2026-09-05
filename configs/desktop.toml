@@ -7,6 +7,11 @@
 [bus]
 kind = "nats"
 url  = "nats://127.0.0.1:4222"   # the bus runs on this machine (no Pi yet)
+# With a local URL the core starts nats-server itself (bound to every
+# interface so the laptop can reach it) and broadcasts the address on the
+# LAN; other machines join with `python run_node.py` and nothing else.
+# serve = false                  # if you run nats-server yourself
+# kind = "local"                 # single machine only; nothing else can join
 
 [core]
 state_db     = "~/.alfred/state.db"

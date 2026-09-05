@@ -6,10 +6,10 @@
 
 [bus]
 kind = "nats"
-url  = "nats://alfredpi.local:4222"
+url  = "auto"       # find the desktop by its LAN beacon; or nats://HOST:4222
 
 [core]
-artifact_dir = "/mnt/alfred"
+artifact_dir = "~/.alfred/artifacts"   # or a shared mount such as /mnt/alfred
 provider   = "ollama"
 model      = "qwen2.5:7b"
 ollama_url = "http://alfreddesktop.local:11434"   # or 127.0.0.1 if local
