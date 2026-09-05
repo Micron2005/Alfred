@@ -372,12 +372,15 @@ class State:
                 f"  - {q['question']}" + (" [blocking]" if q["blocking"] else "")
                 for q in questions))
         rows = self.db.execute(
-            "SELECT capability, status, summary FROM tasks WHERE project_id=? "
+            "SELECT capability, status, summary, error FROM tasks WHERE project_id=? "
             "ORDER BY created_at DESC LIMIT 8", (project_id,)).fetchall()
         if rows:
-            parts.append("Recent work:\n" + "\n".join(
-                f"  - [{r['status']}] {r['capability']}: {(r['summary'] or '')[:120]}"
-                for r in rows))
+            parts.append(
+                "Recent work (already reported to the owner at the time; context "
+                "only, do not bring it up unless asked):\n" + "\n".join(
+                    f"  - [{r['status']}] {r['capability']}: "
+                    f"{(r['summary'] or r['error'] or '')[:120]}"
+                    for r in rows))
         return "\n\n".join(parts)
 
     def export(self, project_id: str) -> str:

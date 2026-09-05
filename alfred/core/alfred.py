@@ -18,6 +18,8 @@ import logging
 import time
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from alfred import llm
 from alfred.bus.base import Bus
@@ -93,7 +95,7 @@ class Alfred:
                 self.state.finish(task.id, result.status, result.summary, result.error or "")
                 for uri in result.artifacts:
                     self.state.add_artifact(task.project_id or "", task.id, uri)
-                if result.ok or task.attempt >= task.max_retries:
+                if result.ok or result.status == "rejected" or task.attempt >= task.max_retries:
                     return result
                 log.warning("task %s failed (%s), retry %d/%d",
                             task.id, result.error, task.attempt + 1, task.max_retries)
@@ -129,11 +131,16 @@ class Alfred:
                 break
 
             for task in ready:
-                # Upstream summaries flow downstream. Summaries only — never
-                # the bulk artifacts, or the context saving is undone.
+                # Upstream summaries flow downstream, plus the URIs of what
+                # was produced — never the artifact contents, or the context
+                # saving is undone. A tester needs to know where the code is.
                 upstream = [results[d].summary for d in task.depends_on if d in results]
                 if upstream:
                     task.inputs["upstream"] = upstream
+                task.artifacts = [
+                    uri for d in task.depends_on if d in results
+                    for uri in results[d].artifacts
+                ]
 
             done = await asyncio.gather(*(self._dispatch(t) for t in ready))
             for task, result in zip(ready, done):
@@ -218,6 +225,10 @@ class Alfred:
         "write me", "write a", "write two", "write three", "post", "tweet",
         "headline", "newsletter", "blog", "facebook", "linkedin", "reddit",
         "customers", "sell", "competitor",
+        "create", "make a", "make me", "file", "save", "write", "delete",
+        "remove", "set up", "setup", "configure", "run ", "test", "fix",
+        "add ", "check", "show me", "list", "how much", "how many", "what is",
+        "open", "look at", "summar", "compare", "price", "pricing",
     )
 
     def _might_need_work(self, message: str) -> bool:
@@ -237,9 +248,9 @@ class Alfred:
         pending = self.state.undelivered()
         if pending:
             briefing += (
-                "\n\nBackground notices (mention at most briefly, and only if "
-                "relevant to what the user is saying — never as the main topic "
-                "of your reply):\n"
+                "\n\nHappened since your last reply (these are facts and supersede "
+                "anything said earlier in the conversation; mention briefly, and "
+                "only if relevant to what the user is saying):\n"
                 + "\n".join(f"  - {n['body']}" for n in pending)
             )
 
@@ -270,6 +281,7 @@ class Alfred:
 
         # Verify before synthesising, so the report reflects checked work.
         checked: list[str] = []
+        failed: list[str] = []
         for task in tasks:
             result = results[task.id]
             passed, note = planner.verify(task, result)
@@ -277,11 +289,40 @@ class Alfred:
                 f"[{task.capability}] {'OK' if passed else 'FAILED'} ({note})\n"
                 f"{result.summary or result.error}"
             )
+            if not passed:
+                failed.append(f"{task.capability}: {note}")
+        if failed:
+            checked.insert(0, (
+                f"{len(failed)} of {len(tasks)} steps FAILED and the user must be told "
+                "which, and why, in plain words:\n  - " + "\n  - ".join(failed)
+            ))
 
         reply = await self._speak(message, briefing, checked)
+        reply = self._attach_deliverables(reply, tasks, results)
         self._remember(message, reply, pending)
         self._learn_in_background(message)
         return reply
+
+    @staticmethod
+    def _attach_deliverables(reply: str, tasks: list[Task],
+                             results: dict[str, TaskResult]) -> str:
+        """Copy the owner asked for is handed over in full, however the
+        narration treated it, and every file produced is named so he can
+        find it. Small models like to describe a draft instead of pasting it."""
+        extra: list[str] = []
+        for task in tasks:
+            result = results[task.id]
+            if task.capability == "marketing.draft" and result.ok and result.summary:
+                draft = result.summary.split("\n---\n")[0].strip()
+                probe = " ".join(draft.split())[:60]
+                if probe and probe not in " ".join(reply.split()):
+                    extra.append(draft)
+        files = [url2pathname(urlparse(u).path)
+                 for task in tasks if results[task.id].ok
+                 for u in results[task.id].artifacts if u.startswith("file:")]
+        if files:
+            extra.append("Files:\n" + "\n".join(f"  {p}" for p in files))
+        return reply if not extra else reply.rstrip() + "\n\n" + "\n\n".join(extra)
 
     async def _speak(self, message: str, briefing: str, findings: list[str]) -> str:
         """The only place in the entire system that produces user-facing text.
@@ -290,13 +331,22 @@ class Alfred:
         whole of what "there is only one Alfred" means in code.
         """
         recent = "\n".join(f"{who}: {what}" for who, what in self.history[-6:])
-        body = "\n\n".join(findings) if findings else "(handled without delegation)"
+        body = "\n\n".join(findings) if findings else (
+            "(none needed — this is conversation, answer it directly and naturally, "
+            "and do not mention tasks or workers. The one exception: if the user "
+            "asked for something to be done or made, nothing was, so say so plainly "
+            "and say what is needed — never claim it was done.)"
+        )
         prompt = (
             f"{briefing}\n\nRecent conversation:\n{recent}\n\n"
-            f"User: {message}\n\nWorker results:\n{body}\n\n"
-            "Reply to the user. Lead with the answer. State plainly anything "
-            "that failed or is unverified — do not paper over it. If a "
-            "decision was made, say what it was and why."
+            f"User: {message}\n\nWorker results for this message:\n{body}\n\n"
+            "Reply to the user about THIS message only. Lead with the answer. "
+            "State plainly anything in this message's worker results that "
+            "failed or is unverified — do not paper over it; if nothing did, "
+            "say nothing about failures at all. Older failures "
+            "and earlier topics were already reported; do not repeat them "
+            "unless the user asks. If a decision was made, say what it was "
+            "and why."
         )
         return await llm.complete(prompt, self.cfg, system=self.persona, timeout=600)
 
@@ -401,6 +451,9 @@ class Alfred:
             return f"pending change #{action_id} is not awaiting approval"
         task = Task.from_json(row["task_json"])
         task.inputs["_approved"] = True           # the mark only this path sets
+        # The owner's approval is taken atomically once, which is the very
+        # guarantee the key exists to provide.
+        task.idempotency_key = task.idempotency_key or f"approved-action:{action_id}"
         result = await self._dispatch(task)
         self.state.settle_action(action_id, result.ok, result.summary or result.error or "")
         outcome = result.summary if result.ok else f"failed: {result.error}"

@@ -37,7 +37,9 @@ async def docs_write(task: Task, cfg: dict) -> TaskResult:
 
     directory = Path(cfg["core"]["artifact_dir"]) / task.id
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / task.inputs.get("filename", "document.md")
+    # The output is Markdown whatever the planner called it; a .docx that is
+    # really Markdown opens as garbage.
+    path = (directory / str(task.inputs.get("filename") or "document")).with_suffix(".md")
     path.write_text(text)
 
     return ok(

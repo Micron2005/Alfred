@@ -276,6 +276,7 @@ def make_handler(bridge: Bridge):
                     self._json(500, {"error": str(exc)})
                 return
             if self.path == "/api/logout":
+                shell_lock.revoke(shell_lock.cookie_from(self.headers))
                 self.send_response(200)
                 self.send_header("Set-Cookie",
                     "mos_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")

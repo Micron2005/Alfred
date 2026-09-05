@@ -80,3 +80,10 @@ def ok(task: Task, summary: str, **kw: Any) -> TaskResult:
 
 def fail(task: Task, error: str) -> TaskResult:
     return TaskResult(task_id=task.id, worker_id="", status="error", error=error)
+
+
+def refuse(task: Task, error: str) -> TaskResult:
+    """The task can never succeed as specified — bad inputs, missing
+    configuration, not in the catalog. Unlike `fail`, the core does not
+    retry it; the same request would meet the same wall."""
+    return TaskResult(task_id=task.id, worker_id="", status="rejected", error=error)
