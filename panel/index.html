@@ -68,6 +68,14 @@
   #topbar { display: flex; justify-content: space-between; align-items: center; padding: 10px 8%;
             border-bottom: 1px solid var(--line); font-size: 13px; color: var(--dim); }
   #topbar a { color: var(--dim); cursor: pointer; text-decoration: underline; }
+  #eyes { display: inline-flex; align-items: center; gap: 7px; }
+  .eye { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); flex: none; }
+  .eye.on { background: var(--ok); box-shadow: 0 0 0 0 rgba(76,195,138,.6); animation: blink 2.4s infinite; }
+  .eye.closed { background: var(--warn); }
+  @keyframes blink { 0% { box-shadow: 0 0 0 0 rgba(76,195,138,.55); } 70% { box-shadow: 0 0 0 7px rgba(76,195,138,0); } 100% { box-shadow: 0 0 0 0 rgba(76,195,138,0); } }
+  .glance { color: #c9ced6; font-size: 13px; line-height: 1.45; margin-top: 6px; }
+  .warnbox { border: 1px solid var(--warn); border-radius: 8px; padding: 8px 10px; margin: 6px 0; font-size: 13px; line-height: 1.5; }
+  .warnbox b { color: var(--warn); }
 
   #login { position: fixed; inset: 0; background: var(--bg); display: none; align-items: center;
            justify-content: center; z-index: 10; }
@@ -91,6 +99,16 @@
   <section>
     <h2>Machines <button id="refresh" title="refresh now">↻</button></h2>
     <div id="nodes"><div class="empty">connecting…</div></div>
+  </section>
+
+  <section>
+    <h2>Eyes</h2>
+    <div class="hint" id="eyesline">…</div>
+    <div class="row" style="margin-top:6px">
+      <button id="eyestoggle">Look away</button>
+      <button id="lookbtn" title="Alfred takes a fresh look and tells you what he sees">What's on my screen?</button>
+    </div>
+    <div class="glance" id="glance"></div>
   </section>
 
   <section>
@@ -121,6 +139,7 @@
 <main>
   <div id="topbar">
     <span id="project"></span>
+    <span id="eyes" title="Whether Alfred is looking at this screen right now"><span class="eye"></span><span id="eyestext">eyes: …</span></span>
     <span><a id="clearlog">clear screen</a></span>
   </div>
   <div id="log"></div>
@@ -189,9 +208,8 @@
       if (!h.turns.length) say("sys", "Say hello. Alfred is listening.");
     } catch (err) { if (err.message !== "locked") say("err", err.message); }
   }
-  $("ask").onsubmit = async (e) => {
-    e.preventDefault();
-    const text = $("text").value.trim();
+  $("ask").onsubmit = (e) => { e.preventDefault(); send($("text").value.trim()); };
+  async function send(text) {
     if (!text || busy) return;
     busy = true; $("send").disabled = true; $("text").value = "";
     say("you", text);
@@ -202,7 +220,7 @@
     } catch (err) {
       pending.className = "msg err"; pending.textContent = err.message === "locked" ? "Locked; unlock and send again." : "Alfred could not answer: " + err.message;
     } finally { busy = false; $("send").disabled = false; $("text").focus(); refresh(); }
-  };
+  }
   $("text").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("ask").requestSubmit(); } };
   $("clearlog").onclick = () => { $("log").innerHTML = ""; };
 
@@ -310,20 +328,80 @@
     box.innerHTML = notices.slice(-8).map((n) => `<div class="notice">${esc(n.body)}</div>`).join("");
   }
 
+  // ---- eyes -------------------------------------------------------------
+  function renderEyes(eyes) {
+    const dot = $("eyes").querySelector(".eye");
+    let cls = "eye", text, line;
+    if (!eyes || !eyes.enabled) {
+      text = "eyes: off"; line = "Switched off in the config ([sight] enabled = false).";
+    } else if (!eyes.open) {
+      text = "eyes: looking away"; line = "Alfred is not looking at this screen. Nothing is captured until you say “eyes on”.";
+    } else if (!eyes.available) {
+      cls += " closed"; text = "eyes: closed"; line = `Wants to look but cannot: ${eyes.reason}.`;
+    } else {
+      cls += " on";
+      const ago = eyes.last ? `glanced ${eyes.last.ago_s}s ago` : "first glance pending";
+      text = `eyes: on · ${eyes.looking ? "looking…" : ago}`;
+      line = `Glancing at this screen every ${Math.round(eyes.glance_s)}s with ${eyes.model} on this machine. Frames never leave it; seeing grants no permission to act.`;
+    }
+    dot.className = cls; $("eyestext").textContent = text; $("eyesline").textContent = line;
+    $("eyestoggle").textContent = eyes && eyes.open ? "Look away" : "Eyes on";
+    $("eyestoggle").disabled = !eyes || !eyes.enabled;
+    $("lookbtn").disabled = !eyes || !eyes.watching || busy;
+    const g = eyes && eyes.open && eyes.last && !eyes.last.question ? eyes.last : null;
+    $("glance").textContent = g ? `Last glance: ${g.text}` : "";
+  }
+  $("eyestoggle").onclick = async () => {
+    const open = !(status && status.eyes && status.eyes.open);
+    try {
+      const eyes = await api("/api/eyes", {method: "POST", body: {open}});
+      if (status) status.eyes = eyes;
+      renderEyes(eyes);
+      say("sys", open ? "Eyes on." : "Alfred is looking away.");
+    } catch (err) { say("err", err.message); }
+  };
+  $("lookbtn").onclick = () => send("What's on my screen right now?");
+
+  // ---- other machines ---------------------------------------------------
+  function renderDoor(w) {
+    // Inside WSL, the bus lives in a Linux VM Windows has to forward to.
+    if (!w) return "";
+    if (w.ok) return `<div class="hint">Windows: ${esc(w.detail)}.</div>`;
+    return `<div class="warnbox"><b>Other machines cannot reach Alfred yet.</b> ${esc(w.detail)}. Alfred runs inside WSL; Windows has to pass the port through.
+      <div class="row" style="margin-top:6px"><button class="primary" id="opendoor">Open the door</button><span class="tag">Windows will ask for permission once.</span></div></div>`;
+  }
+  let doorBusy = false;   // the UAC prompt can sit for a while; keep the button as it is
+  async function openDoor(btn) {
+    doorBusy = true; btn.disabled = true; btn.textContent = "Asking Windows…";
+    try {
+      const r = await api("/api/bridge", {method: "POST"});
+      say(r.ok ? "sys" : "err", r.ok ? "Door open: " + r.detail + "." : "Could not open the door: " + r.detail + ".");
+    } catch (err) { say("err", err.message); }
+    doorBusy = false; refresh();
+  }
+
   function renderJoin(bus) {
     const box = $("join");
+    if (doorBusy) return;
     if (bus.kind !== "nats") {
       box.innerHTML = `<div class="hint">This desktop runs with <code>[bus] kind = "local"</code>, which is single-machine only. Set <code>kind = "nats"</code> in its config and restart to let other machines join.</div>`;
       return;
     }
     const url = bus.join_url;
+    const port = url ? url.split(":").pop() : "4222";
+    const pinned = bus.wsl && !bus.wsl.auto_works;
     box.innerHTML = `
+      ${renderDoor(bus.wsl)}
       <div class="hint">On the laptop (or any other machine), once:</div>
       <pre>git clone https://github.com/Micron2005/Alfred.git
 cd Alfred &amp;&amp; ./install.sh worker</pre>
-      <div class="hint">It finds this desktop by itself and shows up above as “new, waiting for a job”. Click <b>Give it a job</b>. To start it by hand instead: <code>python run_node.py</code>.</div>
+      ${pinned && url ? `<div class="hint">Discovery does not cross WSL's network boundary, so tell the laptop where this desktop is:</div><pre>python run_node.py --bus ${esc(url)}</pre>
+      <div class="hint">It then shows up above as “new, waiting for a job”. Click <b>Give it a job</b>.</div>`
+      : `<div class="hint">It finds this desktop by itself and shows up above as “new, waiting for a job”. Click <b>Give it a job</b>. To start it by hand instead: <code>python run_node.py</code>.</div>
       ${url ? `<div class="hint">If it cannot find the desktop (some Wi-Fi blocks discovery), tell it where:</div><pre>python run_node.py --bus ${esc(url)}</pre>
-      <div class="hint">and make sure this desktop's firewall allows port ${esc(url.split(":").pop())}.</div>` : ""}`;
+      <div class="hint">and make sure this desktop's firewall allows port ${esc(port)}.</div>` : ""}`}`;
+    const door = $("opendoor");
+    if (door) door.onclick = () => openDoor(door);
   }
 
   async function refresh() {
@@ -331,12 +409,13 @@ cd Alfred &amp;&amp; ./install.sh worker</pre>
       status = await api("/api/status");
       renderNodes(status.nodes); renderActions(status.pending_actions);
       renderNotices(status.recent_notices || status.notices); renderJoin(status.bus);
+      renderEyes(status.eyes);
       const online = status.nodes.filter((n) => n.online).length;
       $("busline").textContent = `${online} machine${online === 1 ? "" : "s"} online`;
       const proj = status.projects.find((p) => p.id === status.default_project);
       $("project").textContent = proj ? `Project: ${proj.name}` : "";
     } catch (err) {
-      if (err.message !== "locked") $("busline").textContent = "server unreachable";
+      if (err.message !== "locked") { $("busline").textContent = "server unreachable"; $("eyestext").textContent = "eyes: unknown"; }
     }
   }
   $("refresh").onclick = refresh;

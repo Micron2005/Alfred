@@ -9,6 +9,9 @@ start before Alfred.
 
 Binding 0.0.0.0 is what lets the laptop in; the desktop's own processes still
 talk to it over 127.0.0.1.
+
+Under WSL the address we bind is the VM's private one; the URL we advertise
+is the Windows host's, and reaching it depends on `alfred.wsl.bridge()`.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import socket
 import subprocess
 from pathlib import Path
 
+from alfred import wsl
 from alfred.bus.nats_bus import host_port, is_local_host, reachable
 
 log = logging.getLogger("alfred.bus")
@@ -51,24 +55,19 @@ def find_binary() -> str | None:
 
 
 def lan_address() -> str:
-    """The address other machines on the LAN should use for this one.
-
-    A UDP socket "connected" to a public address never sends anything; the
-    kernel just tells us which interface it would have used.
-    """
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.connect(("10.255.255.255", 1))
-            return sock.getsockname()[0]
-    except OSError:
-        return socket.gethostbyname(socket.gethostname())
+    """The address other machines on the LAN should use for this one."""
+    ip = wsl.wsl_ip()
+    return ip if ip != "127.0.0.1" else socket.gethostbyname(socket.gethostname())
 
 
-def join_url(url: str) -> str:
-    """The bus URL as seen from another machine: loopback swapped for LAN IP."""
+async def join_url(url: str) -> str:
+    """The bus URL as seen from another machine: loopback swapped for the LAN
+    IP -- the Windows host's when we live inside WSL."""
     host, port = host_port(url)
     if is_local_host(host):
         host = lan_address()
+        if wsl.is_wsl():
+            host = await wsl.windows_lan_ip() or host
     return f"nats://{host}:{port}"
 
 
@@ -93,7 +92,7 @@ async def ensure_server(cfg: dict) -> str | None:
 
     if await reachable(url, timeout=1.0) is None:
         log.info("bus already listening at %s", url)
-        return join_url(url)
+        return await join_url(url)
 
     binary = find_binary()
     if binary is None:
@@ -118,7 +117,7 @@ async def ensure_server(cfg: dict) -> str | None:
                 f"nats-server exited with code {_child.returncode}; see {log_path}"
             )
         if await reachable(url, timeout=0.5) is None:
-            return join_url(url)
+            return await join_url(url)
         await asyncio.sleep(0.2)
     raise RuntimeError(f"nats-server started but {url} never answered; see {log_path}")
 

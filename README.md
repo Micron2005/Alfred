@@ -33,6 +33,23 @@ The worker only needs to reach the desktop's port 4222 (open it in the
 desktop firewall); the desktop never connects to the worker. A worker started
 before the desktop waits and says so once in a while.
 
+**Windows, with Alfred inside WSL.** The bus then lives in a Linux VM with a
+private address, and Windows must forward the port in (`netsh interface
+portproxy` plus a firewall rule, both needing administrator rights; the VM's
+address also changes on reboot). The page checks this and shows **Open the
+door** when it is not right; one UAC prompt and it is done, and the join
+command it prints uses the Windows address. LAN discovery (`--bus auto`) does
+not cross that boundary, so a laptop is told the address explicitly. With
+WSL's mirrored networking none of this is needed and the page says so.
+
+**Eyes.** On the desktop, Alfred glances at the screen every 20 s with the
+local vision model (`ollama pull llava:7b`; under WSL the frame comes from the
+Windows desktop via PowerShell). The page shows the indicator at all times and
+the switch -- **Look away** / **Eyes on**, also as spoken commands -- and
+**What's on my screen?** for a fresh look. Frames go to Ollama on the same
+machine and nowhere else; seeing grants no permission to act, and other
+machines' screens are looked at only when asked (`screen.view`). See SIGHT.md.
+
 The page at http://127.0.0.1:8710 (`panel/index.html`, served when the Micron
 OS shell is not installed, always at `/panel`) is the whole control surface:
 chat, which machines are online, "Give it a job" for a new one, approve or
