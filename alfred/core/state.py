@@ -257,6 +257,11 @@ class State:
             "SELECT role, body FROM conversation ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [(r["role"], r["body"]) for r in reversed(rows)]
 
+    def recent_turns_at(self, limit: int = 40) -> list[tuple[str, str, float]]:
+        rows = self.db.execute(
+            "SELECT role, body, at FROM conversation ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [(r["role"], r["body"], r["at"]) for r in reversed(rows)]
+
     # ---- pending actions (owner approval gate for os.apply) --------------
 
     def park_action(self, project_id: str | None, description: str, task_json: str) -> int:
