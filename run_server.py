@@ -18,7 +18,7 @@ Endpoints:
     GET  /                    the Micron OS shell if installed, else Alfred's own panel
     GET  /panel               Alfred's own panel: chat, machines, approvals, enrolment
     POST /api/chat            {"message": str, "project_id": str|null}
-    GET  /api/history         recent conversation turns
+    GET  /api/history         recent conversation turns as [role, body, unix_time]
     GET  /api/status          machines, projects, notices (undelivered + recent)
     GET  /api/health          liveness for systemd
 
@@ -255,7 +255,7 @@ def make_handler(bridge: Bridge):
             elif self.path in {"/", "/index.html"}:
                 self._send(200, SHELL.read_bytes(), "text/html; charset=utf-8")
             elif self.path == "/api/history":
-                self._json(200, {"turns": bridge.alfred.state.recent_turns(limit=40)})
+                self._json(200, {"turns": bridge.alfred.state.recent_turns_at(limit=40)})
             elif self.path == "/api/eyes":
                 self._json(200, bridge.alfred.sight.status())
             elif self.path == "/api/status":

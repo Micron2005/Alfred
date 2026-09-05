@@ -9,109 +9,136 @@
     --bg: #04070b; --panel: #070c12; --panel2: #0a1119; --line: #0f2a3a; --line2: #16465e;
     --text: #cfe9f5; --dim: #5f8ba0; --ok: #2fd6ff; --off: #ff4d5e; --warn: #ffb020; --accent: #2fd6ff;
     --glow: 0 0 10px rgba(47,214,255,.35);
-    font-family: "Segoe UI", Roboto, system-ui, sans-serif; font-size: 15px;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+    font-family: var(--mono); font-size: 13.5px;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; color: var(--text); height: 100vh; display: flex; position: relative;
+  html, body { height: 100%; }
+  body { margin: 0; color: var(--text); display: flex; flex-direction: column; position: relative; overflow: hidden;
          background: radial-gradient(ellipse at 50% -20%, #0b1e2d 0%, var(--bg) 55%, #02040a 100%); }
   /* faint scanlines over everything: the console is a screen, not a page */
   body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 5; opacity: .18;
     background: repeating-linear-gradient(180deg, transparent 0 2px, rgba(0,0,0,.55) 2px 3px); }
-  aside { width: 340px; min-width: 300px; border-right: 1px solid var(--line2); overflow-y: auto;
-          background: linear-gradient(180deg, var(--panel2), var(--panel)); display: flex; flex-direction: column; }
-  main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-  h1 { font-size: 15px; margin: 0; padding: 16px 18px 10px; letter-spacing: 4px; text-transform: uppercase;
-       color: var(--accent); text-shadow: var(--glow); border-bottom: 1px solid var(--line2);
-       font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
-  h1 small { color: var(--dim); font-weight: normal; font-size: 11px; margin-left: 8px; letter-spacing: 1px; text-shadow: none; }
-  section { padding: 10px 18px 14px; border-bottom: 1px solid var(--line); }
-  section h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: var(--accent);
-               margin: 0 0 8px; display: flex; align-items: center; gap: 6px;
-               font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
-  section h2::before { content: "//"; color: var(--dim); }
-  section h2 button { margin-left: auto; }
+
+  /* ---- top HUD ---- */
+  #hud { display: flex; align-items: stretch; border-bottom: 1px solid var(--line2); flex: none;
+         background: linear-gradient(180deg, rgba(47,214,255,.06), transparent); }
+  #brand { padding: 12px 22px; border-right: 1px solid var(--line2); display: flex; flex-direction: column; justify-content: center; }
+  #brand b { font-size: 20px; letter-spacing: 7px; color: var(--accent); text-shadow: var(--glow); font-weight: 700; }
+  #brand small { color: var(--dim); font-size: 10px; letter-spacing: 2px; text-transform: uppercase; margin-top: 2px; }
+  #readouts { display: flex; flex: 1; flex-wrap: wrap; }
+  .ro { padding: 10px 18px; border-right: 1px solid var(--line); display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+  .ro .k { font-size: 9.5px; letter-spacing: 2px; color: var(--dim); text-transform: uppercase; }
+  .ro .v { font-size: 13px; letter-spacing: 1px; text-transform: uppercase; color: var(--text); margin-top: 3px;
+           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 7px; }
+  .ro .v.hot { color: var(--warn); }
+  #clock { margin-left: auto; border-right: 0; border-left: 1px solid var(--line); }
+  #clock .v { color: var(--accent); text-shadow: var(--glow); font-size: 18px; letter-spacing: 3px; }
+
+  /* ---- three panes ---- */
+  #grid { flex: 1; display: grid; grid-template-columns: 320px minmax(0, 1fr) 330px; min-height: 0; gap: 10px; padding: 10px; }
+  aside { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+  main { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+  .card, main { position: relative; border: 1px solid var(--line); background: linear-gradient(180deg, var(--panel2), var(--panel)); }
+  .card::before, .card::after, main::before, main::after { content: ""; position: absolute; width: 9px; height: 9px; pointer-events: none; }
+  .card::before, main::before { top: -1px; left: -1px; border-top: 2px solid var(--accent); border-left: 2px solid var(--accent); }
+  .card::after, main::after { bottom: -1px; right: -1px; border-bottom: 2px solid var(--accent); border-right: 2px solid var(--accent); }
+  .card { padding: 9px 14px 12px; flex: none; }
+  .card h2 { font-size: 10.5px; text-transform: uppercase; letter-spacing: 2px; color: var(--accent);
+             margin: 0 0 8px; display: flex; align-items: center; gap: 6px; }
+  .card h2::before { content: "//"; color: var(--dim); }
+  .card h2 button { margin-left: auto; }
+
   .node { padding: 8px 0; border-top: 1px solid var(--line); }
   .node:first-of-type { border-top: 0; }
   .row { display: flex; align-items: center; gap: 8px; }
-  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--off); flex: none; box-shadow: 0 0 6px var(--off); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--off); flex: none; box-shadow: 0 0 6px var(--off); }
   .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
   .dot.new { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
-  .name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tag { color: var(--dim); font-size: 12px; white-space: nowrap; font-family: ui-monospace, Consolas, monospace; }
+  .name { font-weight: 700; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: uppercase; letter-spacing: 1px; }
+  .tag { color: var(--dim); font-size: 11.5px; white-space: nowrap; }
   .row button { flex: none; white-space: nowrap; }
-  .caps { color: var(--dim); font-size: 12px; margin-top: 3px; line-height: 1.5; word-break: break-word;
-          font-family: ui-monospace, Consolas, monospace; }
-  button { background: rgba(47,214,255,.06); color: var(--accent); border: 1px solid var(--line2); border-radius: 3px;
-           padding: 5px 11px; font-size: 12px; cursor: pointer; text-transform: uppercase; letter-spacing: 1px;
-           font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; transition: box-shadow .15s, border-color .15s; }
+  .caps { color: var(--dim); font-size: 11.5px; margin-top: 3px; line-height: 1.5; word-break: break-word; }
+  button { background: rgba(47,214,255,.06); color: var(--accent); border: 1px solid var(--line2); border-radius: 2px;
+           padding: 5px 11px; font: inherit; font-size: 11px; cursor: pointer; text-transform: uppercase; letter-spacing: 1px;
+           transition: box-shadow .15s, border-color .15s; }
   button:hover { border-color: var(--accent); box-shadow: var(--glow); }
   button.primary { background: var(--accent); color: #03131a; border-color: var(--accent); font-weight: 700; box-shadow: var(--glow); }
   button.danger { border-color: var(--off); color: var(--off); }
   button:disabled { opacity: .4; cursor: default; box-shadow: none; }
   input, textarea { background: #03080d; color: var(--text); border: 1px solid var(--line2);
-                    border-radius: 3px; padding: 8px 10px; font: inherit; width: 100%; }
+                    border-radius: 2px; padding: 7px 10px; font: inherit; width: 100%; }
   input:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: var(--glow); }
   textarea { resize: none; }
-  .enroll { margin-top: 8px; padding: 10px; background: #03080d; border: 1px solid var(--line); border-radius: 3px;
-            display: grid; gap: 6px; min-width: 0; }
+  .enroll { margin-top: 8px; padding: 10px; background: #03080d; border: 1px solid var(--line); display: grid; gap: 6px; min-width: 0; }
   .enroll .row { flex-wrap: wrap; }
   .enroll input, .enroll textarea { min-width: 0; }
-  .enroll label { font-size: 12px; color: var(--dim); }
-  .empty { color: var(--dim); font-size: 13px; padding: 4px 0; }
+  .enroll label { font-size: 11px; color: var(--dim); }
+  .empty { color: var(--dim); font-size: 12px; padding: 4px 0; }
   .action { padding: 8px 0; border-top: 1px solid var(--line); }
-  .action p { margin: 0 0 6px; font-size: 14px; }
-  .notice { font-size: 13px; padding: 4px 0; color: #a9c9d8; border-top: 1px solid var(--line); }
+  .action p { margin: 0 0 6px; font-size: 12.5px; line-height: 1.5; }
+  .notice { font-size: 12px; padding: 4px 0; color: #a9c9d8; border-top: 1px solid var(--line); line-height: 1.45; }
   .notice:first-of-type { border-top: 0; }
-  pre { background: #03080d; border: 1px solid var(--line2); border-left: 3px solid var(--accent); border-radius: 3px;
-        padding: 8px 10px; font-size: 12.5px; overflow-x: auto; margin: 6px 0; white-space: pre-wrap; color: #9fe8ff; }
+  pre { background: #03080d; border: 1px solid var(--line2); border-left: 3px solid var(--accent); padding: 8px 10px;
+        font-size: 12px; overflow-x: auto; margin: 6px 0; white-space: pre-wrap; color: #9fe8ff; }
   code { color: #9fe8ff; }
-  .hint { color: var(--dim); font-size: 12.5px; line-height: 1.5; margin: 4px 0; }
-
-  #log { flex: 1; overflow-y: auto; padding: 22px 8% 10px; }
-  .msg { max-width: 820px; margin: 0 auto 16px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
-         padding-left: 12px; border-left: 2px solid var(--line2); }
-  .msg.you { color: #9fe8ff; border-left-color: var(--accent); }
-  .msg.you::before, .msg.alfred::before { display: block; font-size: 10px; text-transform: uppercase;
-    letter-spacing: 2px; color: var(--dim); margin-bottom: 2px; font-family: ui-monospace, Consolas, monospace; }
-  .msg.you::before { content: "You"; }
-  .msg.alfred::before { content: "Alfred"; }
-  .msg.sys { color: var(--dim); font-size: 12px; text-align: center; border-left: 0; padding-left: 0;
-             font-family: ui-monospace, Consolas, monospace; letter-spacing: 1px; text-transform: uppercase; }
-  .msg.err { color: var(--off); border-left-color: var(--off); }
-  form#ask { display: flex; gap: 8px; padding: 12px 8% 18px; border-top: 1px solid var(--line2);
-             background: linear-gradient(180deg, rgba(47,214,255,.03), transparent); }
-  form#ask textarea { flex: 1; height: 56px; }
-  form#ask button { height: 56px; padding: 0 22px; }
-  .thinking { color: var(--dim); font-style: italic; }
-  .thinking::after { content: "_"; animation: cursor 1s steps(1) infinite; }
-  @keyframes cursor { 50% { opacity: 0; } }
-  #topbar { display: flex; justify-content: space-between; align-items: center; padding: 10px 8%;
-            border-bottom: 1px solid var(--line2); font-size: 12px; color: var(--dim); letter-spacing: 1px;
-            text-transform: uppercase; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-            background: linear-gradient(180deg, rgba(47,214,255,.05), transparent); }
-  #topbar a { color: var(--dim); cursor: pointer; text-decoration: none; }
-  #topbar a:hover { color: var(--accent); }
-  #clock { color: var(--accent); text-shadow: var(--glow); }
-  #eyes { display: inline-flex; align-items: center; gap: 8px; }
-  .eye { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); flex: none; }
+  .hint { color: var(--dim); font-size: 12px; line-height: 1.5; margin: 4px 0; }
+  .glance { color: #a9c9d8; font-size: 12px; line-height: 1.45; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); }
+  .eye { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); flex: none; }
   .eye.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); animation: blink 2.4s infinite; }
   .eye.closed { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
   @keyframes blink { 0% { box-shadow: 0 0 8px var(--ok), 0 0 0 0 rgba(47,214,255,.6); }
                      70% { box-shadow: 0 0 8px var(--ok), 0 0 0 8px rgba(47,214,255,0); }
                      100% { box-shadow: 0 0 8px var(--ok), 0 0 0 0 rgba(47,214,255,0); } }
-  .glance { color: #a9c9d8; font-size: 13px; line-height: 1.45; margin-top: 6px; }
-  .warnbox { border: 1px solid var(--warn); border-left-width: 3px; border-radius: 3px; padding: 8px 10px; margin: 6px 0;
-             font-size: 13px; line-height: 1.5; background: rgba(255,176,32,.05); }
+  .warnbox { border: 1px solid var(--warn); border-left-width: 3px; padding: 8px 10px; margin: 6px 0;
+             font-size: 12px; line-height: 1.5; background: rgba(255,176,32,.05); }
   .warnbox b { color: var(--warn); }
+
+  /* ---- console ---- */
+  #consolebar { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px;
+                border-bottom: 1px solid var(--line); font-size: 10.5px; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); }
+  #consolebar::before { content: "// console"; }
+  #consolebar a { color: var(--dim); cursor: pointer; }
+  #consolebar a:hover { color: var(--accent); }
+  #log { flex: 1; overflow-y: auto; padding: 12px 14px; }
+  .line { display: grid; grid-template-columns: 62px 58px minmax(0, 1fr); gap: 0 12px; padding: 5px 0; line-height: 1.55;
+          border-bottom: 1px solid rgba(15,42,58,.45); }
+  .line .t { color: var(--dim); font-size: 11px; padding-top: 2px; }
+  .line .who { font-size: 10.5px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--dim); padding-top: 2px; }
+  .line .body { white-space: pre-wrap; word-break: break-word; }
+  .line.you .who { color: var(--accent); }
+  .line.you .body { color: #9fe8ff; }
+  .line.alfred .who { color: var(--text); }
+  .line.sys .who, .line.sys .body { color: var(--dim); font-size: 12px; }
+  .line.err .who, .line.err .body { color: var(--off); }
+  .line.thinking .body { color: var(--dim); font-style: italic; }
+  .line.thinking .body::after { content: "_"; animation: cursor 1s steps(1) infinite; }
+  @keyframes cursor { 50% { opacity: 0; } }
+  form#ask { display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--line2);
+             background: linear-gradient(180deg, rgba(47,214,255,.04), transparent); }
+  form#ask .prompt { color: var(--accent); text-shadow: var(--glow); font-size: 16px; padding-top: 6px; flex: none; }
+  form#ask textarea { flex: 1; height: 40px; border: 0; border-bottom: 1px solid var(--line2); background: transparent; padding: 8px 4px; font-size: 14px; }
+  form#ask textarea:focus { box-shadow: none; border-bottom-color: var(--accent); }
+  form#ask button { height: 40px; padding: 0 14px; }
 
   #login { position: fixed; inset: 0; background: var(--bg); display: none; align-items: center;
            justify-content: center; z-index: 10; }
   #login form { width: 340px; display: grid; gap: 10px; padding: 26px; border: 1px solid var(--line2);
-                border-radius: 3px; box-shadow: var(--glow); background: var(--panel); }
-  #login h2 { margin: 0 0 6px; font-size: 13px; letter-spacing: 4px; text-transform: uppercase; color: var(--accent);
-              text-shadow: var(--glow); font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
-  @media (max-width: 800px) { body { flex-direction: column; } aside { width: auto; min-width: 0; flex: none;
-    max-height: 45vh; border-right: 0; border-bottom: 1px solid var(--line2); } main { min-height: 0; } }
+                box-shadow: var(--glow); background: var(--panel); }
+  #login h2 { margin: 0 0 6px; font-size: 13px; letter-spacing: 4px; text-transform: uppercase; color: var(--accent); text-shadow: var(--glow); }
+
+  @media (max-width: 1100px) {
+    #grid { grid-template-columns: 1fr 1fr; grid-template-rows: auto minmax(0, 1fr); grid-auto-flow: row dense; }
+    aside { max-height: 34vh; }
+    main { grid-column: 1 / -1; }
+    #brand b { font-size: 16px; letter-spacing: 5px; }
+  }
+  @media (max-width: 640px) {
+    #grid { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr) auto; }
+    aside { max-height: 22vh; }
+    .ro { padding: 8px 12px; }
+    .line { grid-template-columns: 52px 50px minmax(0, 1fr); gap: 0 8px; }
+  }
 </style>
 </head>
 <body>
@@ -123,15 +150,42 @@
   <div class="hint" id="loginerr"></div>
 </form></div>
 
-<aside>
-  <h1>Alfred <small id="busline"></small></h1>
+<header id="hud">
+  <div id="brand"><b>ALFRED</b><small>desktop · owner</small></div>
+  <div id="readouts">
+    <div class="ro"><span class="k">Bus</span><span class="v" id="busline">…</span></div>
+    <div class="ro"><span class="k">Machines</span><span class="v" id="machines">…</span></div>
+    <div class="ro" id="eyes" title="Whether Alfred is looking at this screen right now"><span class="k">Eyes</span><span class="v"><span class="eye"></span><span id="eyestext">…</span></span></div>
+    <div class="ro"><span class="k">Approvals</span><span class="v" id="approvals">…</span></div>
+    <div class="ro"><span class="k">Project</span><span class="v" id="project">—</span></div>
+    <div class="ro" id="clock"><span class="k">Local time</span><span class="v" id="clocktext"></span></div>
+  </div>
+</header>
 
-  <section>
+<div id="grid">
+<aside>
+  <div class="card">
     <h2>Machines <button id="refresh" title="refresh now">↻</button></h2>
     <div id="nodes"><div class="empty">connecting…</div></div>
-  </section>
+  </div>
+  <div class="card">
+    <h2>Add a machine</h2>
+    <div id="join"></div>
+  </div>
+</aside>
 
-  <section>
+<main>
+  <div id="consolebar"><span></span><a id="clearlog">clear</a></div>
+  <div id="log"></div>
+  <form id="ask">
+    <span class="prompt">&gt;</span>
+    <textarea id="text" placeholder="Tell Alfred what you need. Enter runs it, Shift+Enter for a new line."></textarea>
+    <button class="primary" id="send" type="submit" title="run">Run</button>
+  </form>
+</main>
+
+<aside>
+  <div class="card">
     <h2>Eyes</h2>
     <div class="hint" id="eyesline">…</div>
     <div class="row" style="margin-top:6px">
@@ -139,45 +193,25 @@
       <button id="lookbtn" title="Alfred takes a fresh look and tells you what he sees">What's on my screen?</button>
     </div>
     <div class="glance" id="glance"></div>
-  </section>
-
-  <section>
+  </div>
+  <div class="card">
     <h2>Needs your approval</h2>
     <div id="actions"><div class="empty">nothing waiting</div></div>
-  </section>
-
-  <section>
+  </div>
+  <div class="card">
     <h2>Notes from Alfred</h2>
     <div id="notices"><div class="empty">none</div></div>
-  </section>
-
-  <section>
-    <h2>Add a machine</h2>
-    <div id="join"></div>
-  </section>
-
-  <section>
+  </div>
+  <div class="card">
     <h2>Lock</h2>
     <div class="row">
       <input type="password" id="newpw" placeholder="new password (blank = no lock)">
       <button id="setlock">Set</button>
       <button id="logout" title="lock now">Lock</button>
     </div>
-  </section>
-</aside>
-
-<main>
-  <div id="topbar">
-    <span><span id="clock"></span> <span id="project"></span></span>
-    <span id="eyes" title="Whether Alfred is looking at this screen right now"><span class="eye"></span><span id="eyestext">eyes: …</span></span>
-    <span><a id="clearlog">clear screen</a></span>
   </div>
-  <div id="log"></div>
-  <form id="ask">
-    <textarea id="text" placeholder="Ask Alfred anything. Enter sends, Shift+Enter for a new line."></textarea>
-    <button class="primary" id="send" type="submit">Send</button>
-  </form>
-</main>
+</aside>
+</div>
 
 <script>
 (() => {
@@ -222,20 +256,31 @@
   };
 
   // ---- chat -------------------------------------------------------------
-  function say(kind, text) {
+  const WHO = {you: ">", alfred: "Alfred", sys: "sys", err: "error", thinking: "Alfred"};
+  const hhmmss = (t) => new Date(t ? t * 1000 : Date.now()).toLocaleTimeString([], {hour12: false});
+  // One console line per turn: time, who, body. `kind` is the CSS class list;
+  // its first word decides the label.
+  function say(kind, text, at) {
     const div = document.createElement("div");
-    div.className = "msg " + kind;
-    div.textContent = text;
+    div.className = "line " + kind;
+    div.innerHTML = `<span class="t">${hhmmss(at)}</span><span class="who">${WHO[kind.split(" ")[0]] || ""}</span><span class="body"></span>`;
+    div.querySelector(".body").textContent = text;
     $("log").appendChild(div);
     $("log").scrollTop = $("log").scrollHeight;
     return div;
+  }
+  function relabel(div, kind, text) {
+    div.className = "line " + kind;
+    div.querySelector(".t").textContent = hhmmss();
+    div.querySelector(".who").textContent = WHO[kind] || "";
+    div.querySelector(".body").textContent = text;
   }
   async function loadHistory() {
     try {
       const h = await api("/api/history");
       $("log").innerHTML = "";
-      for (const [role, body] of h.turns) say(role === "Alfred" ? "alfred" : "you", body);
-      if (!h.turns.length) say("sys", "Say hello. Alfred is listening.");
+      for (const [role, body, at] of h.turns) say(role === "Alfred" ? "alfred" : "you", body, at);
+      if (!h.turns.length) say("sys", "Console ready. Alfred is listening.");
     } catch (err) { if (err.message !== "locked") say("err", err.message); }
   }
   $("ask").onsubmit = (e) => { e.preventDefault(); send($("text").value.trim()); };
@@ -243,12 +288,12 @@
     if (!text || busy) return;
     busy = true; $("send").disabled = true; $("text").value = "";
     say("you", text);
-    const pending = say("alfred thinking", "…working. Steps run on whichever machine has the right hands; this can take a while.");
+    const pending = say("thinking", "working. Steps run on whichever machine has the right hands; this can take a while");
     try {
       const r = await api("/api/chat", {method: "POST", body: {message: text}});
-      pending.className = "msg alfred"; pending.textContent = r.reply;
+      relabel(pending, "alfred", r.reply);
     } catch (err) {
-      pending.className = "msg err"; pending.textContent = err.message === "locked" ? "Locked; unlock and send again." : "Alfred could not answer: " + err.message;
+      relabel(pending, "err", err.message === "locked" ? "Locked; unlock and send again." : "Alfred could not answer: " + err.message);
     } finally { busy = false; $("send").disabled = false; $("text").focus(); refresh(); }
   }
   $("text").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("ask").requestSubmit(); } };
@@ -332,6 +377,8 @@
 
   function renderActions(actions) {
     const box = $("actions");
+    $("approvals").textContent = actions.length ? `${actions.length} waiting` : "none";
+    $("approvals").className = actions.length ? "v hot" : "v";
     if (!actions.length) { box.innerHTML = '<div class="empty">nothing waiting</div>'; return; }
     box.innerHTML = "";
     for (const a of actions) {
@@ -363,15 +410,15 @@
     const dot = $("eyes").querySelector(".eye");
     let cls = "eye", text, line;
     if (!eyes || !eyes.enabled) {
-      text = "eyes: off"; line = "Switched off in the config ([sight] enabled = false).";
+      text = "off"; line = "Switched off in the config ([sight] enabled = false).";
     } else if (!eyes.open) {
-      text = "eyes: looking away"; line = "Alfred is not looking at this screen. Nothing is captured until you say “eyes on”.";
+      text = "looking away"; line = "Alfred is not looking at this screen. Nothing is captured until you say “eyes on”.";
     } else if (!eyes.available) {
-      cls += " closed"; text = "eyes: closed"; line = `Wants to look but cannot: ${eyes.reason}.`;
+      cls += " closed"; text = "closed"; line = `Wants to look but cannot: ${eyes.reason}.`;
     } else {
       cls += " on";
       const ago = eyes.last ? `glanced ${eyes.last.ago_s}s ago` : "first glance pending";
-      text = `eyes: on · ${eyes.looking ? "looking…" : ago}`;
+      text = `on · ${eyes.looking ? "looking…" : ago}`;
       line = `Glancing at this screen every ${Math.round(eyes.glance_s)}s with ${eyes.model} on this machine. Frames never leave it; seeing grants no permission to act.`;
     }
     dot.className = cls; $("eyestext").textContent = text; $("eyesline").textContent = line;
@@ -441,15 +488,17 @@ cd Alfred &amp;&amp; ./install.sh worker</pre>
       renderNotices(status.recent_notices || status.notices); renderJoin(status.bus);
       renderEyes(status.eyes);
       const online = status.nodes.filter((n) => n.online).length;
-      $("busline").textContent = `${online} machine${online === 1 ? "" : "s"} online`;
+      $("machines").textContent = `${online} of ${status.nodes.length} online`;
+      $("busline").textContent = status.bus.kind === "nats" ? (status.bus.wsl && !status.bus.wsl.ok ? "door closed" : "open") : "local only";
+      $("busline").className = status.bus.wsl && !status.bus.wsl.ok ? "v hot" : "v";
       const proj = status.projects.find((p) => p.id === status.default_project);
-      $("project").textContent = proj ? `· project: ${proj.name}` : "";
+      $("project").textContent = proj ? proj.name : "—";
     } catch (err) {
-      if (err.message !== "locked") { $("busline").textContent = "offline"; $("eyestext").textContent = "eyes: unknown"; }
+      if (err.message !== "locked") { $("busline").textContent = "offline"; $("busline").className = "v hot"; $("eyestext").textContent = "unknown"; }
     }
   }
   $("refresh").onclick = refresh;
-  const tick = () => { $("clock").textContent = new Date().toLocaleTimeString([], {hour12: false}); };
+  const tick = () => { $("clocktext").textContent = hhmmss(); };
   tick(); setInterval(tick, 1000);
 
   (async () => {

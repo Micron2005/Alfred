@@ -248,14 +248,20 @@ class State:
 
     # ---- persisted conversation -----------------------------------------
 
-    def log_turn(self, role: str, body: str, project_id: str | None = None) -> None:
+    def log_turn(self, role: str, body: str, project_id: str | None = None,
+                 at: float | None = None) -> None:
         self._write("INSERT INTO conversation (project_id,role,body,at) VALUES (?,?,?,?)",
-                    (project_id, role, body[:4000], time.time()))
+                    (project_id, role, body[:4000], at or time.time()))
 
     def recent_turns(self, limit: int = 6) -> list[tuple[str, str]]:
         rows = self.db.execute(
             "SELECT role, body FROM conversation ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [(r["role"], r["body"]) for r in reversed(rows)]
+
+    def recent_turns_at(self, limit: int = 40) -> list[tuple[str, str, float]]:
+        rows = self.db.execute(
+            "SELECT role, body, at FROM conversation ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [(r["role"], r["body"], r["at"]) for r in reversed(rows)]
 
     # ---- pending actions (owner approval gate for os.apply) --------------
 
