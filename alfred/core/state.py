@@ -73,6 +73,9 @@ CREATE TABLE IF NOT EXISTS nodes (
     node_id TEXT PRIMARY KEY, name TEXT, hostname TEXT, profile TEXT,
     capabilities TEXT, note TEXT, enrolled_at REAL, last_seen REAL);
 
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at REAL);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_notices_undelivered ON notices(delivered_at);
 """
@@ -245,14 +248,20 @@ class State:
 
     # ---- persisted conversation -----------------------------------------
 
-    def log_turn(self, role: str, body: str, project_id: str | None = None) -> None:
+    def log_turn(self, role: str, body: str, project_id: str | None = None,
+                 at: float | None = None) -> None:
         self._write("INSERT INTO conversation (project_id,role,body,at) VALUES (?,?,?,?)",
-                    (project_id, role, body[:4000], time.time()))
+                    (project_id, role, body[:4000], at or time.time()))
 
     def recent_turns(self, limit: int = 6) -> list[tuple[str, str]]:
         rows = self.db.execute(
             "SELECT role, body FROM conversation ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [(r["role"], r["body"]) for r in reversed(rows)]
+
+    def recent_turns_at(self, limit: int = 40) -> list[tuple[str, str, float]]:
+        rows = self.db.execute(
+            "SELECT role, body, at FROM conversation ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [(r["role"], r["body"], r["at"]) for r in reversed(rows)]
 
     # ---- pending actions (owner approval gate for os.apply) --------------
 
@@ -328,6 +337,21 @@ class State:
         role to a newcomer rather than duplicating what is already handled."""
         return {r["name"]: json.loads(r["capabilities"] or "[]") for r in self.nodes()}
 
+    # ---- settings (owner switches that must survive a restart) ---------
+
+    def setting(self, key: str, default: str = "") -> str:
+        row = self.db.execute(
+            "SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        self._write(
+            "INSERT INTO settings (key,value,updated_at) VALUES (?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+            "updated_at=excluded.updated_at",
+            (key, value, time.time()),
+        )
+
     # ---- notices (supervisor -> conversation) ---------------------------
 
     def notice(self, kind: str, body: str, project_id: str | None = None) -> None:
@@ -341,6 +365,13 @@ class State:
     def undelivered(self) -> list[dict]:
         return [dict(r) for r in self.db.execute(
             "SELECT * FROM notices WHERE delivered_at IS NULL ORDER BY created_at")]
+
+    def recent_notices(self, limit: int = 8) -> list[dict]:
+        """Delivered or not, the last few, oldest first: a panel that only
+        showed undelivered ones would go blank the moment Alfred speaks."""
+        rows = self.db.execute(
+            "SELECT * FROM notices ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in reversed(rows)]
 
     def mark_delivered(self, ids: list[int]) -> None:
         if ids:
@@ -372,12 +403,15 @@ class State:
                 f"  - {q['question']}" + (" [blocking]" if q["blocking"] else "")
                 for q in questions))
         rows = self.db.execute(
-            "SELECT capability, status, summary FROM tasks WHERE project_id=? "
+            "SELECT capability, status, summary, error FROM tasks WHERE project_id=? "
             "ORDER BY created_at DESC LIMIT 8", (project_id,)).fetchall()
         if rows:
-            parts.append("Recent work:\n" + "\n".join(
-                f"  - [{r['status']}] {r['capability']}: {(r['summary'] or '')[:120]}"
-                for r in rows))
+            parts.append(
+                "Recent work (already reported to the owner at the time; context "
+                "only, do not bring it up unless asked):\n" + "\n".join(
+                    f"  - [{r['status']}] {r['capability']}: "
+                    f"{(r['summary'] or r['error'] or '')[:120]}"
+                    for r in rows))
         return "\n\n".join(parts)
 
     def export(self, project_id: str) -> str:

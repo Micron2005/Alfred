@@ -42,8 +42,7 @@ VISION_SYSTEM = (
 
 
 def _vision_model(cfg: dict) -> str:
-    return (cfg.get("worker", {}).get("vision_model")
-            or cfg.get("core", {}).get("vision_model", "llava:7b"))
+    return llm.vision_model(cfg)
 
 
 def _b64(path: Path) -> str:

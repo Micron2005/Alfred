@@ -95,6 +95,8 @@ def probe(cfg: dict | None = None) -> NodeProfile:
     core = cfg.get("core", {})
     local_ollama = _reachable(core.get("ollama_url", "http://127.0.0.1:11434"))
     remote = core.get("remote_model_url")
+    if core.get("provider") == "openai":
+        remote = bool(os.environ.get(core.get("api_key_env", "ALFRED_API_KEY")))
 
     return NodeProfile(
         node_id=node_id(),

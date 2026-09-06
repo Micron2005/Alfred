@@ -12,6 +12,7 @@ import logging
 from alfred import llm
 from alfred.contracts import Task, TaskResult
 from alfred.worker.handlers import registered_capabilities
+from alfred.worker.handlers.marketing import list_briefs
 
 log = logging.getLogger("alfred.planner")
 
@@ -19,7 +20,9 @@ PLANNER_SYSTEM = (
     "You decompose engineering and business requests into delegatable tasks. Return JSON "
     "only, no prose, no markdown fences. Be sparing: fewer, larger tasks beat "
     "many small ones, because every task costs a round trip. If the request "
-    "needs no delegation at all, return {\"tasks\": []}."
+    "needs no delegation at all — conversation, a question about work already "
+    "done or about the briefing, something no listed capability can do — "
+    "return {\"tasks\": []}."
 )
 
 _PLAN_PROMPT = """Request: {request}
@@ -28,6 +31,8 @@ Project context:
 {briefing}
 
 Available capabilities (use ONLY these, exactly as written): {caps}
+
+Required "inputs" keys per capability (always fill them in):
 {hints}
 Return JSON: {{"tasks": [...]}}. Each task object:
   "ref": short id unique within this plan, e.g. "t1"
@@ -47,8 +52,47 @@ If you cannot map the request onto the capabilities above, return
 # What a capability expects in `inputs`, for the ones where a 7B planner
 # would otherwise have to guess the key names.
 INPUT_HINTS = {
+    "code.write": (
+        "inputs: {\"language\": str, \"filename\": str} — in the prompt ask for a "
+        "program that runs unattended (arguments or a built-in self-check, not "
+        "input() prompts) so it can be tested"
+    ),
+    "code.test": (
+        "inputs: {\"command\": str, \"stdin\": str (optional, fed to the program), "
+        "\"workdir\": str (optional; when it depends_on a code.write it runs where "
+        "that file was written, so name the file in the command, e.g. "
+        "\"python3 calc.py 120 95\")}"
+    ),
+    "docs.write": (
+        "inputs: {\"filename\": str, \"sections\": [{\"heading\": str, \"body\": str}]}"
+    ),
     "research.web": "inputs: {\"query\": str} or {\"urls\": [str]}",
     "research.document": "inputs: {\"paths\": [str]}",
+    "os.observe": (
+        "inputs: {\"what\": one of disk|memory|cpu|services|failed|packages|"
+        "network|kernel|logs} — one task per observation; use this, not "
+        "research, for anything about THIS machine"
+    ),
+    "os.apply": (
+        "inputs: {\"action\": one of pkg_install|pkg_remove|pkg_upgrade|"
+        "service_ctl|setting_set|file_write|self_update|house_edit, \"args\": {...}}"
+        " e.g. pkg_install {\"package\"}, service_ctl {\"name\", \"verb\"}, "
+        "file_write {\"path\", \"content\"}; needs_idempotency: true"
+    ),
+    "ui.windows": (
+        "inputs: {} — screen size, the window in front, every open window on the "
+        "owner's desktop; run it FIRST (and again after opening something) before any ui.act"
+    ),
+    "ui.act": (
+        "inputs: {\"action\": one of move|click|scroll|type|key|open_app|focus_window|"
+        "close_window, \"args\": {...}} — ONE action per task, chained with depends_on: "
+        "open_app {\"app\": \"notepad\"}, focus_window {\"title\": \"Notepad\"}, "
+        "type {\"text\"}, key {\"combo\": \"ctrl+s\"}, click {\"x\", \"y\", \"button\": "
+        "left|right, \"double\": bool}, scroll {\"amount\": int, down>0}, close_window "
+        "{\"title\"}. Only click at coordinates the owner gave or ui.windows reported; "
+        "prefer open_app/focus_window/key/type. Never a terminal."
+    ),
+    "media.inspect": "inputs: {\"path\": str}",
     "marketing.audit": "inputs: {\"url\": str, \"product\": str (brief name, optional)}",
     "marketing.draft": (
         "inputs: {\"kind\": one of post|thread|email|followup|ad|landing|"
@@ -77,11 +121,19 @@ async def plan(
     if not caps:
         log.error("no capabilities available anywhere; is any worker running?")
         return []
+    hints = "".join(f"  {c} {INPUT_HINTS[c]}\n" for c in caps if c in INPUT_HINTS)
+    briefs = list_briefs(cfg) if any(c.startswith("marketing.") for c in caps) else []
+    if briefs:
+        hints += (
+            f"  Product briefs on file: {', '.join(briefs)}. When the request is "
+            "about one of these products (by name or website), set \"product\" to "
+            "that brief name on every marketing.* task.\n"
+        )
     prompt = _PLAN_PROMPT.format(
         request=request,
         briefing=briefing or "(new project, no history)",
         caps=", ".join(caps),
-        hints="".join(f"  {c} {INPUT_HINTS[c]}\n" for c in caps if c in INPUT_HINTS),
+        hints=hints,
     )
 
     for attempt in range(3):
@@ -142,8 +194,13 @@ def _build(
             inputs=inputs if isinstance(inputs, dict) else {},
             timeout_s=_int(entry.get("timeout_s"), 300, 30, 3600),
         )
-        if entry.get("needs_idempotency") or capability.startswith(("hw.", "cad.")):
+        if (entry.get("needs_idempotency") or capability in ("os.apply", "ui.act")
+                or capability.startswith(("hw.", "cad."))):
             task.idempotency_key = f"{project_id or 'adhoc'}:{entry.get('ref')}:{prompt_text[:60]}"
+        if capability == "ui.act":
+            # A click that failed is not re-clicked on Alfred's initiative.
+            task.max_retries = 0
+            task.timeout_s = min(task.timeout_s, 120)
         by_ref[str(entry.get("ref") or task.id)] = task
 
     for entry in entries:
@@ -182,8 +239,9 @@ def verify(task: Task, result: TaskResult) -> tuple[bool, str]:
     exists, use the real check. Where none exists, say so plainly and let
     Alfred read the artifact himself.
     """
-    if result.status == "pending" and task.capability == "os.apply":
-        return True, "parked for the owner's approval"
+    if result.status == "pending" and task.capability in ("os.apply", "ui.act"):
+        return True, ("NOT DONE: parked as a pending change; nothing happens until "
+                      "the owner approves it")
 
     if not result.ok:
         return False, result.error or "worker reported failure"

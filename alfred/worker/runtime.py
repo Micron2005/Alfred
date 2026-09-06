@@ -15,6 +15,7 @@ import shutil
 import time
 
 from alfred.bus.base import Bus
+from alfred.bus.nats_bus import BusUnreachable
 from alfred.contracts import Assignment, Task, TaskResult, WorkerAdvert
 from alfred.probe import probe
 from alfred.worker.handlers import get_handler, registered_capabilities
@@ -104,6 +105,7 @@ class WorkerRuntime:
         return WorkerAdvert(
             worker_id=self.worker_id,
             host=platform.node(),
+            node_id=self.profile.node_id,
             capabilities=self.capabilities,
             queue_depth=self._running,
             vram_free_gb=vram_free_gb(),
@@ -214,8 +216,21 @@ class WorkerRuntime:
         finally:
             self._running -= 1
 
+    async def _connect_patiently(self) -> None:
+        """A worker that starts before the desktop is normal. Say so once a
+        while, in one line, and keep trying."""
+        delay = 10
+        while not self._stop.is_set():
+            try:
+                await self.bus.connect()
+                return
+            except BusUnreachable as exc:
+                log.warning("%s -- retrying in %ss", exc, delay)
+            await asyncio.sleep(delay)
+        raise asyncio.CancelledError
+
     async def run(self) -> None:
-        await self.bus.connect()
+        await self._connect_patiently()
         hb_early = None
         if self.enrolling:
             hb_early = asyncio.create_task(self._heartbeat_loop())

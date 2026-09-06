@@ -8,7 +8,9 @@ Wants=network-online.target
 Type=simple
 User=%i
 WorkingDirectory=/home/%i/Alfred
-ExecStart=/usr/bin/python3 /home/%i/Alfred/run_node.py --bus nats://alfredpi.local:4222
+# --bus auto: finds the desktop by its LAN beacon. Pin it instead with
+# --bus nats://DESKTOP-IP:4222 if broadcast is blocked on your network.
+ExecStart=/usr/bin/python3 /home/%i/Alfred/run_node.py --bus auto
 Restart=on-failure
 RestartSec=10
 

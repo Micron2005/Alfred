@@ -7,6 +7,11 @@
 [bus]
 kind = "nats"
 url  = "nats://127.0.0.1:4222"   # the bus runs on this machine (no Pi yet)
+# With a local URL the core starts nats-server itself (bound to every
+# interface so the laptop can reach it) and broadcasts the address on the
+# LAN; other machines join with `python run_node.py` and nothing else.
+# serve = false                  # if you run nats-server yourself
+# kind = "local"                 # single machine only; nothing else can join
 
 [core]
 state_db     = "~/.alfred/state.db"
@@ -21,7 +26,7 @@ supervisor_tick_s = 30
 provider   = "ollama"
 model      = "qwen2.5:7b"
 ollama_url = "http://127.0.0.1:11434"
-vision_model = "llava:7b"   # ollama pull llava:7b — the eyes; loaded on demand
+vision_model = "llava:7b"   # ollama pull llava:7b — the eyes
 
 # --- speed tuning for an 8GB card, all local ---
 keep_alive  = "30m"    # hold the model in VRAM between messages ("-1" = forever)
@@ -36,6 +41,15 @@ num_predict = 1024     # cap reply length; raise for long technical answers
 # model        = "gpt-4o-mini"
 # api_key_env  = "ALFRED_API_KEY"
 
+# His eyes on this screen (SIGHT.md). While awake and not told to look away,
+# he glances at the screen every glance_s seconds with the vision model above,
+# always through the local Ollama -- frames never leave this machine, whatever
+# [core] uses for words. The panel shows the indicator and the switch; saying
+# "look away" / "eyes on" does the same. Seeing grants no permission to act.
+[sight]
+enabled  = true
+glance_s = 20
+
 [worker]
 id = "desktop"
 concurrency = 1          # 1, not 2: the worker shares the GPU with Alfred
@@ -47,9 +61,15 @@ capabilities = [
     "cad.measure", "cad.variables", "cad.export", "cad.evaluate",
     "cad.generate", "cad.inspect",
     "os.observe", "os.apply",
+    # Hands on THIS desktop (mouse, keyboard, windows; Windows via powershell.exe
+    # from WSL). ui.act is parked for approval on the panel unless the owner
+    # says "drive for N minutes"; STOP on the panel ends that at once.
+    "ui.windows", "ui.act",
     "media.inspect",
-    # Eyes, parked for later. When ready:  ollama pull llava:7b
-    # then uncomment:  "vision.describe", "media.video",
+    # Image and video work once llava:7b is pulled; uncomment then:
+    # "vision.describe", "media.video",
+    # screen.view is for looking at OTHER machines' screens on request; the
+    # owner's own screen is [sight] above, not a worker capability.
 ]
 
 [research]

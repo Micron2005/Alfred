@@ -132,6 +132,7 @@ class WorkerAdvert:
     on_ac_power: bool = True
     software: list[str] = field(default_factory=list)
     sent_at: float = field(default_factory=_now)
+    node_id: str = ""  # the machine this worker runs on; ties it to a NodeProfile
 
     def can(self, capability: str) -> bool:
         """Exact match, or prefix match if the worker advertised a family."""

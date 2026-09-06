@@ -53,7 +53,8 @@ def draw(s):
         last = n.get("last_seen_s")
         seen = f"{DIM}last heard {int(last)}s ago{R}" if last is not None and not n["online"] else ""
         caps = n.get("capabilities") or []
-        capline = f"{DIM}{', '.join(caps[:4])}{'\u2026' if len(caps)>4 else ''}{R}" if caps else f"{DIM}unassigned{R}"
+        more = "…" if len(caps) > 4 else ""
+        capline = f"{DIM}{', '.join(caps[:4])}{more}{R}" if caps else f"{DIM}unassigned{R}"
         out.append(f"    {dot(n['online'], n.get('working'))}  {B}{n['name']}{R}  {seen}")
         out.append(f"        {capline}")
     out.append("")

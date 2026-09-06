@@ -1,0 +1,592 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alfred</title>
+<style>
+  :root {
+    --bg: #04070b; --panel: #070c12; --panel2: #0a1119; --line: #0f2a3a; --line2: #16465e;
+    --text: #cfe9f5; --dim: #5f8ba0; --ok: #2fd6ff; --off: #ff4d5e; --warn: #ffb020; --accent: #2fd6ff;
+    --glow: 0 0 10px rgba(47,214,255,.35);
+    --mono: ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+    font-family: var(--mono); font-size: 13.5px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; color: var(--text); display: flex; flex-direction: column; position: relative; overflow: hidden;
+         background: radial-gradient(ellipse at 50% -20%, #0b1e2d 0%, var(--bg) 55%, #02040a 100%); }
+  /* faint scanlines over everything: the console is a screen, not a page */
+  body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 5; opacity: .18;
+    background: repeating-linear-gradient(180deg, transparent 0 2px, rgba(0,0,0,.55) 2px 3px); }
+
+  /* ---- top HUD ---- */
+  #hud { display: flex; align-items: stretch; border-bottom: 1px solid var(--line2); flex: none;
+         background: linear-gradient(180deg, rgba(47,214,255,.06), transparent); }
+  #brand { padding: 12px 22px; border-right: 1px solid var(--line2); display: flex; flex-direction: column; justify-content: center; }
+  #brand b { font-size: 20px; letter-spacing: 7px; color: var(--accent); text-shadow: var(--glow); font-weight: 700; }
+  #brand small { color: var(--dim); font-size: 10px; letter-spacing: 2px; text-transform: uppercase; margin-top: 2px; }
+  #readouts { display: flex; flex: 1; flex-wrap: wrap; }
+  .ro { padding: 10px 18px; border-right: 1px solid var(--line); display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+  .ro .k { font-size: 9.5px; letter-spacing: 2px; color: var(--dim); text-transform: uppercase; }
+  .ro .v { font-size: 13px; letter-spacing: 1px; text-transform: uppercase; color: var(--text); margin-top: 3px;
+           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 7px; }
+  .ro .v.hot { color: var(--warn); }
+  #clock { margin-left: auto; border-right: 0; border-left: 1px solid var(--line); }
+  #clock .v { color: var(--accent); text-shadow: var(--glow); font-size: 18px; letter-spacing: 3px; }
+
+  /* ---- three panes ---- */
+  #grid { flex: 1; display: grid; grid-template-columns: 320px minmax(0, 1fr) 330px; min-height: 0; gap: 10px; padding: 10px; }
+  aside { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+  main { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+  .card, main { position: relative; border: 1px solid var(--line); background: linear-gradient(180deg, var(--panel2), var(--panel)); }
+  .card::before, .card::after, main::before, main::after { content: ""; position: absolute; width: 9px; height: 9px; pointer-events: none; }
+  .card::before, main::before { top: -1px; left: -1px; border-top: 2px solid var(--accent); border-left: 2px solid var(--accent); }
+  .card::after, main::after { bottom: -1px; right: -1px; border-bottom: 2px solid var(--accent); border-right: 2px solid var(--accent); }
+  .card { padding: 9px 14px 12px; flex: none; }
+  .card h2 { font-size: 10.5px; text-transform: uppercase; letter-spacing: 2px; color: var(--accent);
+             margin: 0 0 8px; display: flex; align-items: center; gap: 6px; }
+  .card h2::before { content: "//"; color: var(--dim); }
+  .card h2 button { margin-left: auto; }
+
+  .node { padding: 8px 0; border-top: 1px solid var(--line); }
+  .node:first-of-type { border-top: 0; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--off); flex: none; box-shadow: 0 0 6px var(--off); }
+  .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot.new { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+  .name { font-weight: 700; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: uppercase; letter-spacing: 1px; }
+  .tag { color: var(--dim); font-size: 11.5px; white-space: nowrap; }
+  .row button { flex: none; white-space: nowrap; }
+  .caps { color: var(--dim); font-size: 11.5px; margin-top: 3px; line-height: 1.5; word-break: break-word; }
+  button { background: rgba(47,214,255,.06); color: var(--accent); border: 1px solid var(--line2); border-radius: 2px;
+           padding: 5px 11px; font: inherit; font-size: 11px; cursor: pointer; text-transform: uppercase; letter-spacing: 1px;
+           transition: box-shadow .15s, border-color .15s; }
+  button:hover { border-color: var(--accent); box-shadow: var(--glow); }
+  button.primary { background: var(--accent); color: #03131a; border-color: var(--accent); font-weight: 700; box-shadow: var(--glow); }
+  button.danger { border-color: var(--off); color: var(--off); }
+  button.stop { background: var(--off); color: #fff; border-color: var(--off); font-weight: 700; font-size: 13px; letter-spacing: 3px;
+                padding: 9px 18px; box-shadow: 0 0 12px rgba(255,77,94,.5); }
+  button.stop:hover { box-shadow: 0 0 18px rgba(255,77,94,.8); }
+  button:disabled { opacity: .4; cursor: default; box-shadow: none; }
+  input, textarea { background: #03080d; color: var(--text); border: 1px solid var(--line2);
+                    border-radius: 2px; padding: 7px 10px; font: inherit; width: 100%; }
+  input:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: var(--glow); }
+  textarea { resize: none; }
+  .enroll { margin-top: 8px; padding: 10px; background: #03080d; border: 1px solid var(--line); display: grid; gap: 6px; min-width: 0; }
+  .enroll .row { flex-wrap: wrap; }
+  .enroll input, .enroll textarea { min-width: 0; }
+  .enroll label { font-size: 11px; color: var(--dim); }
+  .empty { color: var(--dim); font-size: 12px; padding: 4px 0; }
+  .action { padding: 8px 0; border-top: 1px solid var(--line); }
+  .action p { margin: 0 0 6px; font-size: 12.5px; line-height: 1.5; }
+  .notice { font-size: 12px; padding: 4px 0; color: #a9c9d8; border-top: 1px solid var(--line); line-height: 1.45; }
+  .notice:first-of-type { border-top: 0; }
+  pre { background: #03080d; border: 1px solid var(--line2); border-left: 3px solid var(--accent); padding: 8px 10px;
+        font-size: 12px; overflow-x: auto; margin: 6px 0; white-space: pre-wrap; color: #9fe8ff; }
+  code { color: #9fe8ff; }
+  .hint { color: var(--dim); font-size: 12px; line-height: 1.5; margin: 4px 0; }
+  .glance { color: #a9c9d8; font-size: 12px; line-height: 1.45; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); }
+  .eye { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); flex: none; }
+  .eye.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); animation: blink 2.4s infinite; }
+  .eye.closed { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+  @keyframes blink { 0% { box-shadow: 0 0 8px var(--ok), 0 0 0 0 rgba(47,214,255,.6); }
+                     70% { box-shadow: 0 0 8px var(--ok), 0 0 0 8px rgba(47,214,255,0); }
+                     100% { box-shadow: 0 0 8px var(--ok), 0 0 0 0 rgba(47,214,255,0); } }
+  .warnbox { border: 1px solid var(--warn); border-left-width: 3px; padding: 8px 10px; margin: 6px 0;
+             font-size: 12px; line-height: 1.5; background: rgba(255,176,32,.05); }
+  .warnbox b { color: var(--warn); }
+  .hand { width: 9px; height: 9px; border-radius: 2px; background: var(--dim); flex: none; }
+  .hand.driving { background: var(--off); box-shadow: 0 0 8px var(--off); animation: blink-red 1.2s infinite; }
+  @keyframes blink-red { 50% { opacity: .35; } }
+  #drivebox { margin-top: 8px; padding: 10px; border: 1px solid var(--off); background: rgba(255,77,94,.06); display: none; }
+  #drivebox.on { display: block; }
+  #countdown { font-size: 26px; letter-spacing: 4px; color: var(--off); text-shadow: 0 0 10px rgba(255,77,94,.6); }
+  #driverow { flex-wrap: wrap; }
+  #minutes { width: 64px; text-align: center; }
+  .did { font-size: 11.5px; color: #a9c9d8; padding: 3px 0; border-top: 1px solid var(--line); line-height: 1.45; }
+  .did.bad { color: var(--off); }
+  .did .t { color: var(--dim); margin-right: 6px; }
+
+  /* ---- console ---- */
+  #consolebar { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px;
+                border-bottom: 1px solid var(--line); font-size: 10.5px; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); }
+  #consolebar::before { content: "// console"; }
+  #consolebar a { color: var(--dim); cursor: pointer; }
+  #consolebar a:hover { color: var(--accent); }
+  #log { flex: 1; overflow-y: auto; padding: 12px 14px; }
+  .line { display: grid; grid-template-columns: 62px 58px minmax(0, 1fr); gap: 0 12px; padding: 5px 0; line-height: 1.55;
+          border-bottom: 1px solid rgba(15,42,58,.45); }
+  .line .t { color: var(--dim); font-size: 11px; padding-top: 2px; }
+  .line .who { font-size: 10.5px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--dim); padding-top: 2px; }
+  .line .body { white-space: pre-wrap; word-break: break-word; }
+  .line.you .who { color: var(--accent); }
+  .line.you .body { color: #9fe8ff; }
+  .line.alfred .who { color: var(--text); }
+  .line.sys .who, .line.sys .body { color: var(--dim); font-size: 12px; }
+  .line.err .who, .line.err .body { color: var(--off); }
+  .line.thinking .body { color: var(--dim); font-style: italic; }
+  .line.thinking .body::after { content: "_"; animation: cursor 1s steps(1) infinite; }
+  @keyframes cursor { 50% { opacity: 0; } }
+  form#ask { display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--line2);
+             background: linear-gradient(180deg, rgba(47,214,255,.04), transparent); }
+  form#ask .prompt { color: var(--accent); text-shadow: var(--glow); font-size: 16px; padding-top: 6px; flex: none; }
+  form#ask textarea { flex: 1; height: 40px; border: 0; border-bottom: 1px solid var(--line2); background: transparent; padding: 8px 4px; font-size: 14px; }
+  form#ask textarea:focus { box-shadow: none; border-bottom-color: var(--accent); }
+  form#ask button { height: 40px; padding: 0 14px; }
+
+  #login { position: fixed; inset: 0; background: var(--bg); display: none; align-items: center;
+           justify-content: center; z-index: 10; }
+  #login form { width: 340px; display: grid; gap: 10px; padding: 26px; border: 1px solid var(--line2);
+                box-shadow: var(--glow); background: var(--panel); }
+  #login h2 { margin: 0 0 6px; font-size: 13px; letter-spacing: 4px; text-transform: uppercase; color: var(--accent); text-shadow: var(--glow); }
+
+  @media (max-width: 1100px) {
+    #grid { grid-template-columns: 1fr 1fr; grid-template-rows: auto minmax(0, 1fr); grid-auto-flow: row dense; }
+    aside { max-height: 34vh; }
+    main { grid-column: 1 / -1; }
+    #brand b { font-size: 16px; letter-spacing: 5px; }
+  }
+  @media (max-width: 640px) {
+    #grid { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr) auto; }
+    aside { max-height: 22vh; }
+    .ro { padding: 8px 12px; }
+    .line { grid-template-columns: 52px 50px minmax(0, 1fr); gap: 0 8px; }
+  }
+</style>
+</head>
+<body>
+<div id="login"><form id="loginform">
+  <h2>Access restricted</h2>
+  <div class="hint">Alfred is locked. Identify yourself.</div>
+  <input type="password" id="pw" placeholder="password" autofocus>
+  <button class="primary" type="submit">Unlock</button>
+  <div class="hint" id="loginerr"></div>
+</form></div>
+
+<header id="hud">
+  <div id="brand"><b>ALFRED</b><small>desktop · owner</small></div>
+  <div id="readouts">
+    <div class="ro"><span class="k">Bus</span><span class="v" id="busline">…</span></div>
+    <div class="ro"><span class="k">Machines</span><span class="v" id="machines">…</span></div>
+    <div class="ro" id="eyes" title="Whether Alfred is looking at this screen right now"><span class="k">Eyes</span><span class="v"><span class="eye"></span><span id="eyestext">…</span></span></div>
+    <div class="ro" id="handsro" title="Whether Alfred may touch the mouse and keyboard without asking"><span class="k">Hands</span><span class="v"><span class="hand"></span><span id="handstext">…</span></span></div>
+    <div class="ro"><span class="k">Approvals</span><span class="v" id="approvals">…</span></div>
+    <div class="ro"><span class="k">Project</span><span class="v" id="project">—</span></div>
+    <div class="ro" id="clock"><span class="k">Local time</span><span class="v" id="clocktext"></span></div>
+  </div>
+</header>
+
+<div id="grid">
+<aside>
+  <div class="card">
+    <h2>Machines <button id="refresh" title="refresh now">↻</button></h2>
+    <div id="nodes"><div class="empty">connecting…</div></div>
+  </div>
+  <div class="card">
+    <h2>Add a machine</h2>
+    <div id="join"></div>
+  </div>
+</aside>
+
+<main>
+  <div id="consolebar"><span></span><a id="clearlog">clear</a></div>
+  <div id="log"></div>
+  <form id="ask">
+    <span class="prompt">&gt;</span>
+    <textarea id="text" placeholder="Tell Alfred what you need. Enter runs it, Shift+Enter for a new line."></textarea>
+    <button class="primary" id="send" type="submit" title="run">Run</button>
+  </form>
+</main>
+
+<aside>
+  <div class="card">
+    <h2>Eyes</h2>
+    <div class="hint" id="eyesline">…</div>
+    <div class="row" style="margin-top:6px">
+      <button id="eyestoggle">Look away</button>
+      <button id="lookbtn" title="Alfred takes a fresh look and tells you what he sees">What's on my screen?</button>
+    </div>
+    <div class="glance" id="glance"></div>
+  </div>
+  <div class="card">
+    <h2>Hands</h2>
+    <div class="hint" id="handsline">…</div>
+    <div class="row" id="driverow" style="margin-top:6px">
+      <span class="tag">Drive for</span>
+      <input type="number" id="minutes" min="1" max="60" value="5">
+      <span class="tag">min</span>
+      <button id="drivebtn" title="Until the clock runs out, mouse and keyboard actions run without an approval card">Let Alfred drive</button>
+    </div>
+    <div id="drivebox">
+      <div class="row"><span id="countdown">00:00</span><button class="stop" id="stopbtn" style="margin-left:auto">STOP</button></div>
+      <div class="hint">Alfred is driving. Every action is logged below. STOP ends it at once.</div>
+    </div>
+    <div id="recenthands"></div>
+  </div>
+  <div class="card">
+    <h2>Needs your approval</h2>
+    <div id="actions"><div class="empty">nothing waiting</div></div>
+  </div>
+  <div class="card">
+    <h2>Notes from Alfred</h2>
+    <div id="notices"><div class="empty">none</div></div>
+  </div>
+  <div class="card">
+    <h2>Lock</h2>
+    <div class="row">
+      <input type="password" id="newpw" placeholder="new password (blank = no lock)">
+      <button id="setlock">Set</button>
+      <button id="logout" title="lock now">Lock</button>
+    </div>
+  </div>
+</aside>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  let status = null;
+  let busy = false;
+
+  async function api(path, opts = {}) {
+    const res = await fetch(path, {
+      headers: {"Content-Type": "application/json"},
+      ...opts,
+      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+    });
+    if (res.status === 401) { showLogin(true); throw new Error("locked"); }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    return data;
+  }
+
+  // ---- login ------------------------------------------------------------
+  function showLogin(on) { $("login").style.display = on ? "flex" : "none"; if (on) $("pw").focus(); }
+  $("loginform").onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await api("/api/login", {method: "POST", body: {password: $("pw").value}});
+      $("pw").value = ""; $("loginerr").textContent = ""; showLogin(false);
+      await loadHistory(); await refresh();
+    } catch (err) { $("loginerr").textContent = err.message; }
+  };
+  $("setlock").onclick = async () => {
+    try {
+      const r = await api("/api/setlock", {method: "POST", body: {password: $("newpw").value}});
+      $("newpw").value = "";
+      say("sys", r.locked ? "Lock set. The page will ask for the password from now on." : "Lock removed.");
+    } catch (err) { say("err", err.message); }
+  };
+  $("logout").onclick = async () => {
+    await fetch("/api/logout", {method: "POST"});
+    const h = await fetch("/api/health").then((r) => r.json()).catch(() => ({}));
+    if (h.locked) showLogin(true); else say("sys", "No password is set, so there is nothing to lock. Set one above.");
+  };
+
+  // ---- chat -------------------------------------------------------------
+  const WHO = {you: ">", alfred: "Alfred", sys: "sys", err: "error", thinking: "Alfred"};
+  const hhmmss = (t) => new Date(t ? t * 1000 : Date.now()).toLocaleTimeString([], {hour12: false});
+  // One console line per turn: time, who, body. `kind` is the CSS class list;
+  // its first word decides the label.
+  function say(kind, text, at) {
+    const div = document.createElement("div");
+    div.className = "line " + kind;
+    div.innerHTML = `<span class="t">${hhmmss(at)}</span><span class="who">${WHO[kind.split(" ")[0]] || ""}</span><span class="body"></span>`;
+    div.querySelector(".body").textContent = text;
+    $("log").appendChild(div);
+    $("log").scrollTop = $("log").scrollHeight;
+    return div;
+  }
+  function relabel(div, kind, text) {
+    div.className = "line " + kind;
+    div.querySelector(".t").textContent = hhmmss();
+    div.querySelector(".who").textContent = WHO[kind] || "";
+    div.querySelector(".body").textContent = text;
+  }
+  async function loadHistory() {
+    try {
+      const h = await api("/api/history");
+      $("log").innerHTML = "";
+      for (const [role, body, at] of h.turns) say(role === "Alfred" ? "alfred" : "you", body, at);
+      if (!h.turns.length) say("sys", "Console ready. Alfred is listening.");
+    } catch (err) { if (err.message !== "locked") say("err", err.message); }
+  }
+  $("ask").onsubmit = (e) => { e.preventDefault(); send($("text").value.trim()); };
+  async function send(text) {
+    if (!text || busy) return;
+    busy = true; $("send").disabled = true; $("text").value = "";
+    say("you", text);
+    const pending = say("thinking", "working. Steps run on whichever machine has the right hands; this can take a while");
+    try {
+      const r = await api("/api/chat", {method: "POST", body: {message: text}});
+      relabel(pending, "alfred", r.reply);
+    } catch (err) {
+      relabel(pending, "err", err.message === "locked" ? "Locked; unlock and send again." : "Alfred could not answer: " + err.message);
+    } finally { busy = false; $("send").disabled = false; $("text").focus(); refresh(); }
+  }
+  $("text").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("ask").requestSubmit(); } };
+  $("clearlog").onclick = () => { $("log").innerHTML = ""; };
+
+  // ---- status -----------------------------------------------------------
+  function renderNodes(nodes) {
+    const box = $("nodes");
+    if (!nodes.length) { box.innerHTML = '<div class="empty">no machines yet</div>'; return; }
+    // Re-rendering must not eat a half-filled enrolment form: keep the
+    // element itself and re-attach it to its machine.
+    const open = new Map([...box.querySelectorAll(".enroll")].map((el) => [el.dataset.node, el]));
+    box.innerHTML = "";
+    for (const n of nodes) {
+      const div = document.createElement("div");
+      div.className = "node";
+      const unassigned = !n.assigned && n.seen;
+      const dot = unassigned ? "new" : (n.online ? "on" : "");
+      const state = unassigned ? "new, waiting for a job" : (n.online ? "online" : "offline");
+      div.innerHTML = `
+        <div class="row">
+          <span class="dot ${dot}"></span>
+          <span class="name">${esc(n.name || (n.describe || n.node_id).split(" (")[0])}</span>
+          <span class="tag">${n.local ? "this desktop · " : ""}${state}</span>
+          ${unassigned ? `<button data-enroll="${esc(n.node_id)}">Give it a job</button>` : ""}
+        </div>
+        ${n.describe ? `<div class="caps">${esc(n.describe)}</div>` : ""}
+        <div class="caps">${n.capabilities.length ? esc(n.capabilities.join(", ")) : (unassigned ? "" : "no capabilities")}</div>`;
+      box.appendChild(div);
+      if (open.has(n.node_id) && unassigned) div.appendChild(open.get(n.node_id));
+    }
+    box.querySelectorAll("[data-enroll]").forEach((b) => {
+      b.onclick = () => openEnroll(b.closest(".node"), nodes.find((n) => n.node_id === b.dataset.enroll));
+    });
+  }
+
+  async function openEnroll(div, n) {
+    let form = div.querySelector(".enroll");
+    if (!form) {
+      form = document.createElement("div");
+      form.className = "enroll"; form.dataset.node = n.node_id;
+      form.innerHTML = `
+        <label>What should Alfred call it?</label>
+        <input class="e-name" placeholder="zenbook" value="${esc((n.describe || "").split(/[\s(]/)[0].toLowerCase())}">
+        <label>What is it for? (optional hint, e.g. "coding and testing")</label>
+        <input class="e-hint" placeholder="leave blank and Alfred decides from its hardware">
+        <label>Capabilities (Alfred fills this in; edit if you like)</label>
+        <textarea class="e-caps" rows="2" placeholder="press Suggest"></textarea>
+        <div class="row">
+          <button class="e-suggest">Suggest</button>
+          <button class="e-assign primary">Assign</button>
+          <button class="e-cancel">Cancel</button>
+          <span class="tag e-msg"></span>
+        </div>`;
+      div.appendChild(form);
+      form.querySelector(".e-cancel").onclick = () => form.remove();
+      form.querySelector(".e-suggest").onclick = () => suggest(form, n.node_id);
+      form.querySelector(".e-assign").onclick = () => assign(form, n.node_id);
+      suggest(form, n.node_id);
+    }
+  }
+  async function suggest(form, nodeId) {
+    const msg = form.querySelector(".e-msg"); msg.textContent = "asking Alfred…";
+    try {
+      const r = await api(`/api/nodes/${encodeURIComponent(nodeId)}/propose`,
+                          {method: "POST", body: {hint: form.querySelector(".e-hint").value}});
+      form.querySelector(".e-caps").value = r.proposal.capabilities.join(", ");
+      if (!form.querySelector(".e-name").value) form.querySelector(".e-name").value = r.proposal.name;
+      msg.textContent = r.proposal.capabilities.length ? "" : "Alfred found nothing this machine can do yet";
+    } catch (err) { msg.textContent = err.message; }
+  }
+  async function assign(form, nodeId) {
+    const msg = form.querySelector(".e-msg"); msg.textContent = "assigning…";
+    const caps = form.querySelector(".e-caps").value.split(/[,\s]+/).filter(Boolean);
+    try {
+      const r = await api(`/api/nodes/${encodeURIComponent(nodeId)}/assign`,
+                          {method: "POST", body: {name: form.querySelector(".e-name").value.trim(), capabilities: caps}});
+      say("sys", r.result); form.remove(); refresh();
+    } catch (err) { msg.textContent = err.message; }
+  }
+
+  function renderActions(actions) {
+    const box = $("actions");
+    $("approvals").textContent = actions.length ? `${actions.length} waiting` : "none";
+    $("approvals").className = actions.length ? "v hot" : "v";
+    if (!actions.length) { box.innerHTML = '<div class="empty">nothing waiting</div>'; return; }
+    box.innerHTML = "";
+    for (const a of actions) {
+      const div = document.createElement("div"); div.className = "action";
+      div.innerHTML = `<p>#${a.id} ${esc(a.description)}</p>
+        <div class="row"><button class="primary" data-ok="${a.id}">Approve</button>
+        <button class="danger" data-no="${a.id}">Decline</button></div>`;
+      box.appendChild(div);
+    }
+    box.querySelectorAll("[data-ok],[data-no]").forEach((b) => {
+      b.onclick = async () => {
+        const id = b.dataset.ok || b.dataset.no, verb = b.dataset.ok ? "approve" : "decline";
+        b.disabled = true;
+        try { const r = await api(`/api/actions/${id}/${verb}`, {method: "POST", body: {}}); say("sys", `Change #${id}: ${r.result}`); }
+        catch (err) { say("err", err.message); }
+        refresh();
+      };
+    });
+  }
+
+  function renderNotices(notices) {
+    const box = $("notices");
+    if (!notices.length) { box.innerHTML = '<div class="empty">none</div>'; return; }
+    box.innerHTML = notices.slice(-8).map((n) => `<div class="notice">${esc(n.body)}</div>`).join("");
+  }
+
+  // ---- eyes -------------------------------------------------------------
+  function renderEyes(eyes) {
+    const dot = $("eyes").querySelector(".eye");
+    let cls = "eye", text, line;
+    if (!eyes || !eyes.enabled) {
+      text = "off"; line = "Switched off in the config ([sight] enabled = false).";
+    } else if (!eyes.open) {
+      text = "looking away"; line = "Alfred is not looking at this screen. Nothing is captured until you say “eyes on”.";
+    } else if (!eyes.available) {
+      cls += " closed"; text = "closed"; line = `Wants to look but cannot: ${eyes.reason}.`;
+    } else {
+      cls += " on";
+      const ago = eyes.last ? `glanced ${eyes.last.ago_s}s ago` : "first glance pending";
+      text = `on · ${eyes.looking ? "looking…" : ago}`;
+      line = `Glancing at this screen every ${Math.round(eyes.glance_s)}s with ${eyes.model} on this machine. Frames never leave it; seeing grants no permission to act.`;
+    }
+    dot.className = cls; $("eyestext").textContent = text; $("eyesline").textContent = line;
+    $("eyestoggle").textContent = eyes && eyes.open ? "Look away" : "Eyes on";
+    $("eyestoggle").disabled = !eyes || !eyes.enabled;
+    $("lookbtn").disabled = !eyes || !eyes.watching || busy;
+    const g = eyes && eyes.open && eyes.last && !eyes.last.question ? eyes.last : null;
+    $("glance").textContent = g ? `Last glance: ${g.text}` : "";
+  }
+  $("eyestoggle").onclick = async () => {
+    const open = !(status && status.eyes && status.eyes.open);
+    try {
+      const eyes = await api("/api/eyes", {method: "POST", body: {open}});
+      if (status) status.eyes = eyes;
+      renderEyes(eyes);
+      say("sys", open ? "Eyes on." : "Alfred is looking away.");
+    } catch (err) { say("err", err.message); }
+  };
+  $("lookbtn").onclick = () => send("What's on my screen right now?");
+
+  // ---- hands ------------------------------------------------------------
+  // The grant's end is kept as a local deadline so the countdown ticks every
+  // second between status polls, and reads 00:00 the moment it is over.
+  let driveUntil = 0;
+  const mmss = (s) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+  function renderHands(hands) {
+    const dot = $("handsro").querySelector(".hand");
+    if (!hands) { dot.className = "hand"; $("handstext").textContent = "unknown"; return; }
+    driveUntil = hands.driving ? Date.now() + hands.remaining_s * 1000 : 0;
+    tickHands();
+    $("minutes").max = hands.max_minutes || 60;
+    const recent = (hands.recent || []).slice(-6).reverse();
+    $("recenthands").innerHTML = recent.map((r) =>
+      `<div class="did${r.ok ? "" : " bad"}"><span class="t">${esc(hhmmss(r.at))}</span>${esc(r.what)} — ${esc(r.outcome)}</div>`).join("");
+  }
+  function tickHands() {
+    const dot = $("handsro").querySelector(".hand");
+    const left = driveUntil ? Math.max(0, Math.round((driveUntil - Date.now()) / 1000)) : 0;
+    const driving = left > 0;
+    dot.className = driving ? "hand driving" : "hand";
+    $("handstext").textContent = driving ? `driving · ${mmss(left)}` : "ask first";
+    $("handstext").parentElement.className = driving ? "v hot" : "v";
+    $("drivebox").className = driving ? "on" : "";
+    $("countdown").textContent = mmss(left);
+    $("driverow").style.display = driving ? "none" : "";
+    $("handsline").textContent = driving
+      ? "Alfred may move the mouse, type and open or close windows on this desktop without asking, until the clock runs out. Terminals stay off limits."
+      : "Every mouse, keyboard or window action Alfred plans is parked under “Needs your approval” first. Or let him drive for a while.";
+    if (!driving) driveUntil = 0;
+  }
+  $("drivebtn").onclick = async () => {
+    const minutes = Math.max(1, Math.min(Number($("minutes").max) || 60, Number($("minutes").value) || 5));
+    try {
+      const hands = await api("/api/hands/drive", {method: "POST", body: {minutes}});
+      if (status) status.hands = hands;
+      renderHands(hands);
+      say("sys", `Alfred may drive for ${minutes} minute${minutes === 1 ? "" : "s"}. Press STOP to end it early.`);
+    } catch (err) { say("err", err.message); }
+  };
+  $("stopbtn").onclick = async () => {
+    driveUntil = 0; tickHands();   // the panel stops first; the server confirms
+    try {
+      const hands = await api("/api/hands/stop", {method: "POST", body: {}});
+      if (status) status.hands = hands;
+      renderHands(hands);
+      say("sys", "STOP. Hands off; every action needs your approval again.");
+    } catch (err) { say("err", err.message); }
+  };
+
+  // ---- other machines ---------------------------------------------------
+  function renderDoor(w) {
+    // Inside WSL, the bus lives in a Linux VM Windows has to forward to.
+    if (!w) return "";
+    if (w.ok) return `<div class="hint">Windows: ${esc(w.detail)}.</div>`;
+    return `<div class="warnbox"><b>Other machines cannot reach Alfred yet.</b> ${esc(w.detail)}. Alfred runs inside WSL; Windows has to pass the port through.
+      <div class="row" style="margin-top:6px"><button class="primary" id="opendoor">Open the door</button><span class="tag">Windows will ask for permission once.</span></div></div>`;
+  }
+  let doorBusy = false;   // the UAC prompt can sit for a while; keep the button as it is
+  async function openDoor(btn) {
+    doorBusy = true; btn.disabled = true; btn.textContent = "Asking Windows…";
+    try {
+      const r = await api("/api/bridge", {method: "POST"});
+      say(r.ok ? "sys" : "err", r.ok ? "Door open: " + r.detail + "." : "Could not open the door: " + r.detail + ".");
+    } catch (err) { say("err", err.message); }
+    doorBusy = false; refresh();
+  }
+
+  function renderJoin(bus) {
+    const box = $("join");
+    if (doorBusy) return;
+    if (bus.kind !== "nats") {
+      box.innerHTML = `<div class="hint">This desktop runs with <code>[bus] kind = "local"</code>, which is single-machine only. Set <code>kind = "nats"</code> in its config and restart to let other machines join.</div>`;
+      return;
+    }
+    const url = bus.join_url;
+    const port = url ? url.split(":").pop() : "4222";
+    const pinned = bus.wsl && !bus.wsl.auto_works;
+    box.innerHTML = `
+      ${renderDoor(bus.wsl)}
+      <div class="hint">On the laptop (or any other machine), once:</div>
+      <pre>git clone https://github.com/Micron2005/Alfred.git
+cd Alfred &amp;&amp; ./install.sh worker</pre>
+      ${pinned && url ? `<div class="hint">Discovery does not cross WSL's network boundary, so tell the laptop where this desktop is:</div><pre>python run_node.py --bus ${esc(url)}</pre>
+      <div class="hint">It then shows up above as “new, waiting for a job”. Click <b>Give it a job</b>.</div>`
+      : `<div class="hint">It finds this desktop by itself and shows up above as “new, waiting for a job”. Click <b>Give it a job</b>. To start it by hand instead: <code>python run_node.py</code>.</div>
+      ${url ? `<div class="hint">If it cannot find the desktop (some Wi-Fi blocks discovery), tell it where:</div><pre>python run_node.py --bus ${esc(url)}</pre>
+      <div class="hint">and make sure this desktop's firewall allows port ${esc(port)}.</div>` : ""}`}`;
+    const door = $("opendoor");
+    if (door) door.onclick = () => openDoor(door);
+  }
+
+  async function refresh() {
+    try {
+      status = await api("/api/status");
+      renderNodes(status.nodes); renderActions(status.pending_actions);
+      renderNotices(status.recent_notices || status.notices); renderJoin(status.bus);
+      renderEyes(status.eyes); renderHands(status.hands);
+      const online = status.nodes.filter((n) => n.online).length;
+      $("machines").textContent = `${online} of ${status.nodes.length} online`;
+      $("busline").textContent = status.bus.kind === "nats" ? (status.bus.wsl && !status.bus.wsl.ok ? "door closed" : "open") : "local only";
+      $("busline").className = status.bus.wsl && !status.bus.wsl.ok ? "v hot" : "v";
+      const proj = status.projects.find((p) => p.id === status.default_project);
+      $("project").textContent = proj ? proj.name : "—";
+    } catch (err) {
+      if (err.message !== "locked") { $("busline").textContent = "offline"; $("busline").className = "v hot"; $("eyestext").textContent = "unknown"; }
+    }
+  }
+  $("refresh").onclick = refresh;
+  const tick = () => { $("clocktext").textContent = hhmmss(); tickHands(); };
+  tick(); setInterval(tick, 1000);
+
+  (async () => {
+    const h = await fetch("/api/health").then((r) => r.json()).catch(() => null);
+    if (!h) { say("err", "The server is not answering. Is run_server.py running?"); return; }
+    await loadHistory(); await refresh();
+    setInterval(refresh, 5000);
+  })();
+})();
+</script>
+</body>
+</html>

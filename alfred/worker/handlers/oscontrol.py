@@ -33,7 +33,7 @@ import subprocess
 from pathlib import Path
 
 from alfred.contracts import Task, TaskResult
-from alfred.worker.handlers import fail, handler, ok
+from alfred.worker.handlers import fail, handler, ok, refuse
 
 # ---------------------------------------------------------------------------
 # The lines no approval crosses
@@ -93,14 +93,37 @@ OBSERVATIONS: dict[str, list[str]] = {
 }
 
 
+_OBSERVE_WORDS = {
+    "disk": ("disk", "storage", "space", "df"),
+    "memory": ("memory", "ram", "swap"),
+    "cpu": ("cpu", "load", "uptime"),
+    "services": ("services", "running", "daemon"),
+    "failed": ("failed", "broken", "crash"),
+    "packages": ("package", "upgradable", "updates", "apt"),
+    "network": ("network", "ip ", "interface", "wifi", "ethernet"),
+    "kernel": ("kernel", "uname", "os version"),
+    "logs": ("log", "journal", "warning"),
+}
+
+
+def _infer_observation(prompt: str) -> str:
+    """A planner that names the observation in prose but leaves `what` empty
+    should not cost the owner a failed task."""
+    low = prompt.lower()
+    for what, words in _OBSERVE_WORDS.items():
+        if any(w in low for w in words):
+            return what
+    return ""
+
+
 @handler("os.observe")
 async def os_observe(task: Task, cfg: dict) -> TaskResult:
-    what = str(task.inputs.get("what", "")).lower()
+    what = str(task.inputs.get("what", "")).lower() or _infer_observation(task.prompt)
     if what not in OBSERVATIONS:
-        return fail(task, f"unknown observation {what!r}; options: {', '.join(OBSERVATIONS)}")
+        return refuse(task, f"unknown observation {what!r}; options: {', '.join(OBSERVATIONS)}")
     argv = OBSERVATIONS[what]
     if shutil.which(argv[0]) is None:
-        return fail(task, f"{argv[0]} is not available on this machine")
+        return refuse(task, f"{argv[0]} is not available on this machine")
 
     proc = await asyncio.create_subprocess_exec(
         *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
@@ -290,7 +313,7 @@ async def os_apply(task: Task, cfg: dict) -> TaskResult:
     args = task.inputs.get("args") or {}
 
     if action not in ACTIONS:
-        return fail(task, f"'{action}' is not in the catalog: {', '.join(ACTIONS)}")
+        return refuse(task, f"'{action}' is not in the catalog: {', '.join(ACTIONS)}")
 
     # The gate, enforced at the last possible moment as well as in the core.
     # Approval is granted by the owner, marked by the core at dispatch time.
@@ -305,7 +328,7 @@ async def os_apply(task: Task, cfg: dict) -> TaskResult:
 
     reason = _deny_reason(action, args)
     if reason is not None:
-        return fail(task, f"denied: {reason}")
+        return refuse(task, f"denied: {reason}")
 
     fn, _ = ACTIONS[action]
     try:

@@ -14,22 +14,54 @@ Alfred would only ever discover a finished job because you happened to ask.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import time
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from alfred import llm
 from alfred.bus.base import Bus
-from alfred.contracts import Assignment, NodeProfile, Task, TaskResult, _new_id
+from alfred.contracts import (
+    Assignment, NodeProfile, Task, TaskResult, WorkerAdvert, _new_id,
+)
 from alfred.core import enrollment, planner, scheduler
-from alfred.worker.handlers import registered_capabilities
+from alfred.core.hands import Hands
+from alfred.core.sight import Sight
 from alfred.core.state import State
+from alfred.probe import node_id as local_node_id
+from alfred.worker.handlers import registered_capabilities
 
 log = logging.getLogger("alfred.core")
 
 PERSONA_PATH = Path(__file__).with_name("persona.md")
 STALE_PROJECT_DAYS = 7
+
+# Capabilities that change the owner's machine or touch his desktop: parked
+# for approval, never dispatched on Alfred's say-so.
+GATED = frozenset({"os.apply", "ui.act"})
+
+
+def hands_outcome(result: TaskResult) -> str:
+    """The short past-tense phrase for the Hands card, next to the description
+    it already shows."""
+    if not result.ok:
+        return f"failed: {result.error}"
+    return str(result.data.get("did") or result.summary or "done")
+
+
+def describe_gated(task: Task) -> str:
+    """The sentence on the approval card."""
+    action = str(task.inputs.get("action", "?"))
+    args = task.inputs.get("args") or {}
+    if task.capability == "ui.act":
+        from alfred.worker.handlers.hands import describe_action
+    else:
+        from alfred.worker.handlers.oscontrol import describe_action
+    return describe_action(action, args)
 
 
 class Alfred:
@@ -39,10 +71,18 @@ class Alfred:
         self.state = State(cfg["core"]["state_db"])
         self.persona = PERSONA_PATH.read_text() if PERSONA_PATH.exists() else ""
         self.local_worker_id: str = cfg["worker"]["id"]
+        self.local_node_id: str = local_node_id()
         # Conversation survives restarts: the last turns reload so a
         # service restart or self-update does not wipe the thread.
         self.history: list[tuple[str, str]] = list(self.state.recent_turns(6))
         self._bg_tasks: set = set()   # background learners, kept referenced
+        self._online_nodes: set[str] = set()   # heartbeating machines, last tick
+        self._offline_nodes: set[str] = set()  # assigned machines absent, last tick
+        self._assigned_seen: set[str] | None = None  # assignments known last tick
+        self._talking = False   # a reply is being composed; the eyes hold still
+        self._asked_at = 0.0    # when the message being answered arrived
+        self.sight = Sight(cfg, self.state, busy=lambda: self._talking)
+        self.hands = Hands()
 
     # ---- dispatch --------------------------------------------------------
 
@@ -50,20 +90,39 @@ class Alfred:
         """Submit, wait, retry, and let the local worker take over if nobody
         else does. The fallback is not a special path — the desktop's own
         worker claims from the same queue as everyone else, just later."""
-        # OS changes never run on Alfred's judgment. Park them; the owner's
-        # approval (shell button or /approve) is what dispatches them.
-        if task.capability == "os.apply" and not task.inputs.get("_approved"):
-            from alfred.worker.handlers.oscontrol import describe_action
-            description = describe_action(
-                str(task.inputs.get("action", "?")), task.inputs.get("args") or {})
-            action_id = self.state.park_action(
-                task.project_id, description, task.to_json())
-            return TaskResult(
-                task_id=task.id, worker_id="owner-approval", status="pending",
-                summary=f"'{description}' is queued as pending change #{action_id}, "
-                        "awaiting your approval.",
-            )
+        # OS changes and touches on the desktop never run on Alfred's
+        # judgment. Park them; the owner's approval (shell button or
+        # /approve) is what dispatches them. The one exception is a standing
+        # "drive for N minutes" grant on the hands, and STOP ends that.
+        granted = False
+        if task.capability in GATED and not task.inputs.get("_approved"):
+            description = describe_gated(task)
+            if task.capability == "ui.act" and self.hands.stopped_since(self._asked_at):
+                return TaskResult(
+                    task_id=task.id, worker_id="owner-stop", status="rejected",
+                    error=f"'{description}' not done: the owner pressed STOP",
+                )
+            if task.capability == "ui.act" and self.hands.driving:
+                task.inputs["_approved"] = True
+                task.inputs["_granted"] = True
+                granted = True
+            else:
+                action_id = self.state.park_action(
+                    task.project_id, description, task.to_json())
+                return TaskResult(
+                    task_id=task.id, worker_id="owner-approval", status="pending",
+                    summary=f"'{description}' is queued as pending change #{action_id}, "
+                            "awaiting your approval.",
+                )
+        if granted:
+            result = await self._dispatch_now(task)
+            self.hands.record(description, hands_outcome(result), result.ok)
+            outcome = result.summary if result.ok else f"failed: {result.error}"
+            self.state.notice("hands", f"Hands (driving): {outcome}", task.project_id)
+            return result
+        return await self._dispatch_now(task)
 
+    async def _dispatch_now(self, task: Task) -> TaskResult:
         while True:
             self.state.enqueue(task)
             # The lease is what lets the supervisor notice an abandoned task.
@@ -93,7 +152,7 @@ class Alfred:
                 self.state.finish(task.id, result.status, result.summary, result.error or "")
                 for uri in result.artifacts:
                     self.state.add_artifact(task.project_id or "", task.id, uri)
-                if result.ok or task.attempt >= task.max_retries:
+                if result.ok or result.status == "rejected" or task.attempt >= task.max_retries:
                     return result
                 log.warning("task %s failed (%s), retry %d/%d",
                             task.id, result.error, task.attempt + 1, task.max_retries)
@@ -108,18 +167,44 @@ class Alfred:
             # future stay intact and the attempt history is readable.
             task = replace(task, id=_new_id("task"), attempt=task.attempt + 1)
 
-    async def _run_graph(self, tasks: list[Task]) -> dict[str, TaskResult]:
+    async def _run_graph(self, tasks: list[Task],
+                         offline: dict[str, str] | None = None) -> dict[str, TaskResult]:
         """Execute the DAG, running everything whose dependencies are met
         concurrently. A flat list would serialise work with no reason to be
-        sequential."""
+        sequential.
+
+        Steps that need a capability only an offline machine offers are
+        refused here, not queued: nothing would claim them, and the owner is
+        better served by "the zenbook is off" now than a timeout later."""
         results: dict[str, TaskResult] = {}
         remaining = {t.id: t for t in tasks}
+        for task in tasks:
+            machine = (offline or {}).get(task.capability)
+            if machine:
+                results[task.id] = TaskResult(
+                    task_id=task.id, worker_id="none", status="rejected",
+                    error=f"needs {task.capability}, which only {machine} offers, "
+                          f"and {machine} is offline; nothing was done",
+                )
+                remaining.pop(task.id)
 
         while remaining:
             ready = [
                 t for t in remaining.values()
                 if all(dep in results for dep in t.depends_on)
             ]
+            for task in ready[:]:
+                blocked = [d for d in task.depends_on
+                           if results[d].status == "rejected" and results[d].worker_id == "none"]
+                if blocked:
+                    results[task.id] = TaskResult(
+                        task_id=task.id, worker_id="none", status="rejected",
+                        error="skipped: depends on a step that could not run",
+                    )
+                    remaining.pop(task.id)
+                    ready.remove(task)
+            if not ready and not remaining:
+                break
             if not ready:
                 for t in remaining.values():
                     results[t.id] = TaskResult(
@@ -129,11 +214,16 @@ class Alfred:
                 break
 
             for task in ready:
-                # Upstream summaries flow downstream. Summaries only — never
-                # the bulk artifacts, or the context saving is undone.
+                # Upstream summaries flow downstream, plus the URIs of what
+                # was produced — never the artifact contents, or the context
+                # saving is undone. A tester needs to know where the code is.
                 upstream = [results[d].summary for d in task.depends_on if d in results]
                 if upstream:
                     task.inputs["upstream"] = upstream
+                task.artifacts = [
+                    uri for d in task.depends_on if d in results
+                    for uri in results[d].artifacts
+                ]
 
             done = await asyncio.gather(*(self._dispatch(t) for t in ready))
             for task, result in zip(ready, done):
@@ -188,6 +278,22 @@ class Alfred:
                                   inputs={"path": path}, timeout_s=120))
         return tasks
 
+    async def _offline_hands(self, available: list[str]) -> dict[str, str]:
+        """Capabilities the household has on paper but not on the bus right
+        now, mapped to the machine that offers them: a sleeping Zenbook takes
+        code.write with it. The planner still plans for them so the refusal
+        can name the step and the machine, instead of quietly planning around
+        a hole."""
+        live = await self.live_workers_by_node()
+        out: dict[str, str] = {}
+        for row in self.state.all_nodes():
+            if row["node_id"] in live:
+                continue
+            for cap in json.loads(row.get("capabilities") or "[]"):
+                if cap not in available:
+                    out.setdefault(cap, row.get("name") or row["node_id"])
+        return out
+
     def _owner_briefing(self) -> str:
         """What Alfred currently knows about his employer. The fresh-start
         persona promises he learns you over time; this is where that memory
@@ -218,6 +324,12 @@ class Alfred:
         "write me", "write a", "write two", "write three", "post", "tweet",
         "headline", "newsletter", "blog", "facebook", "linkedin", "reddit",
         "customers", "sell", "competitor",
+        "create", "make a", "make me", "file", "save", "write", "delete",
+        "remove", "set up", "setup", "configure", "run ", "test", "fix",
+        "add ", "check", "show me", "list", "how much", "how many", "what is",
+        "open", "look at", "summar", "compare", "price", "pricing",
+        "click", "type ", "press ", "close", "window", "mouse", "keyboard",
+        "scroll", "switch to", "bring up", "launch",
     )
 
     def _might_need_work(self, message: str) -> bool:
@@ -228,31 +340,52 @@ class Alfred:
 
     async def converse(self, message: str, project_id: str | None = None,
                        attachments: list[str] | None = None) -> str:
+        self._asked_at = time.time()
+        switched = self.sight.command(message) or self.hands.command(message)
+        if switched:
+            self._remember(message, switched, [])
+            return switched
+        self._talking = True
+        try:
+            return await self._converse(message, project_id, attachments)
+        finally:
+            self._talking = False
+
+    async def _converse(self, message: str, project_id: str | None,
+                        attachments: list[str] | None) -> str:
         briefing = self.state.briefing(project_id) if project_id else ""
-        owner = self._owner_briefing()
-        if owner:
-            briefing = (owner + "\n\n" + briefing) if briefing else owner
+        for part in (self._owner_briefing(), self.sight.briefing(), self.hands.briefing()):
+            if part:
+                briefing = (briefing + "\n\n" + part) if briefing else part
 
         # Anything the supervisor noticed while you were away.
         pending = self.state.undelivered()
         if pending:
             briefing += (
-                "\n\nBackground notices (mention at most briefly, and only if "
-                "relevant to what the user is saying — never as the main topic "
-                "of your reply):\n"
+                "\n\nHappened since your last reply (these are facts and supersede "
+                "anything said earlier in the conversation; mention briefly, and "
+                "only if relevant to what the user is saying):\n"
                 + "\n".join(f"  - {n['body']}" for n in pending)
             )
 
+        available = await self._network_capabilities()
+        offline: dict[str, str] = {}
         if attachments:
-            tasks = self._attachment_tasks(
-                attachments, message, available=await self._network_capabilities())
+            tasks = self._attachment_tasks(attachments, message, available=set(available))
+        elif self._asks_about_own_screen(message):
+            # A fresh look beats a twenty-second-old glance, and the owner's
+            # own screen never goes through the planner or a worker.
+            reply = await self._speak(message, briefing, [await self._fresh_look(message)])
+            self._remember(message, reply, pending)
+            return reply
         elif self._might_need_work(message):
             # Only consult the planner when the message plausibly asks for
             # something a worker does. Plain conversation skips it entirely
             # and answers in one LLM call instead of two.
+            offline = await self._offline_hands(available)
             tasks = await planner.plan(
                 message, briefing, self.cfg, project_id,
-                available=await self._network_capabilities(),
+                available=sorted(set(available) | set(offline)),
             )
         else:
             tasks = []
@@ -266,10 +399,11 @@ class Alfred:
 
         log.info("plan: %d tasks across %s", len(tasks),
                  ", ".join(sorted({t.capability for t in tasks})))
-        results = await self._run_graph(tasks)
+        results = await self._run_graph(tasks, offline)
 
         # Verify before synthesising, so the report reflects checked work.
         checked: list[str] = []
+        failed: list[str] = []
         for task in tasks:
             result = results[task.id]
             passed, note = planner.verify(task, result)
@@ -277,11 +411,68 @@ class Alfred:
                 f"[{task.capability}] {'OK' if passed else 'FAILED'} ({note})\n"
                 f"{result.summary or result.error}"
             )
+            if not passed:
+                failed.append(f"{task.capability}: {note}")
+        if failed:
+            checked.insert(0, (
+                f"{len(failed)} of {len(tasks)} steps FAILED and the user must be told "
+                "which, and why, in plain words:\n  - " + "\n  - ".join(failed)
+            ))
 
         reply = await self._speak(message, briefing, checked)
+        reply = self._attach_deliverables(reply, tasks, results, self.local_worker_id)
         self._remember(message, reply, pending)
         self._learn_in_background(message)
         return reply
+
+    def _asks_about_own_screen(self, message: str) -> bool:
+        """"What's on my screen?" -- but "what's on the zenbook's screen" is a
+        request about another machine and goes to the planner as before."""
+        if not self.sight.watching or not self.sight.asks_about_screen(message):
+            return False
+        m = message.lower()
+        others = (self._online_nodes | self._offline_nodes) - {self.local_node_id}
+        return not any(n.lower() in m for n in others)
+
+    async def _fresh_look(self, question: str) -> str:
+        try:
+            seen = await self.sight.glance(question)
+        except Exception as exc:
+            return ("[eyes] FAILED (could not look at the screen just now)\n"
+                    f"{exc}")
+        return ("[eyes] OK (a fresh look at the owner's screen, taken just now; "
+                f"answer from this, not from older glances)\n{seen}")
+
+    @staticmethod
+    def _attach_deliverables(reply: str, tasks: list[Task],
+                             results: dict[str, TaskResult], local_worker_id: str) -> str:
+        """Copy the owner asked for is handed over in full, however the
+        narration treated it, and every file produced is named so he can
+        find it — including which machine it is on, when that is not this
+        one. Small models like to describe a draft instead of pasting it."""
+        extra: list[str] = []
+        for task in tasks:
+            result = results[task.id]
+            if task.capability == "marketing.draft" and result.ok and result.summary:
+                draft = result.summary.split("\n---\n")[0].strip()
+                probe = " ".join(draft.split())[:60]
+                if probe and probe not in " ".join(reply.split()):
+                    extra.append(draft)
+            if task.capability == "research.web" and result.ok:
+                missing = [u for u in result.data.get("fetched", []) if u not in reply]
+                if missing:
+                    extra.append("Sources read:\n" + "\n".join(f"  {u}" for u in missing))
+        files = []
+        for task in tasks:
+            result = results[task.id]
+            if not result.ok:
+                continue
+            where = "" if result.worker_id in {local_worker_id, ""} else f"  (on {result.worker_id})"
+            paths = [url2pathname(urlparse(u).path) for u in result.artifacts if u.startswith("file:")]
+            files += [p + where for p in paths if p not in reply]  # the model may have named it already
+        if files:
+            extra.append("Files:\n" + "\n".join(f"  {p}" for p in files))
+        return reply if not extra else reply.rstrip() + "\n\n" + "\n\n".join(extra)
 
     async def _speak(self, message: str, briefing: str, findings: list[str]) -> str:
         """The only place in the entire system that produces user-facing text.
@@ -290,21 +481,39 @@ class Alfred:
         whole of what "there is only one Alfred" means in code.
         """
         recent = "\n".join(f"{who}: {what}" for who, what in self.history[-6:])
-        body = "\n\n".join(findings) if findings else "(handled without delegation)"
-        prompt = (
-            f"{briefing}\n\nRecent conversation:\n{recent}\n\n"
-            f"User: {message}\n\nWorker results:\n{body}\n\n"
-            "Reply to the user. Lead with the answer. State plainly anything "
-            "that failed or is unverified — do not paper over it. If a "
-            "decision was made, say what it was and why."
-        )
+        if findings:
+            body = "\n\n".join(findings)
+            prompt = (
+                f"{briefing}\n\nRecent conversation:\n{recent}\n\n"
+                f"User: {message}\n\nWorker results for this message:\n{body}\n\n"
+                "Reply to the user about THIS message only. Lead with the answer. "
+                "State plainly anything in this message's worker results that "
+                "failed or is unverified — do not paper over it; if nothing did, "
+                "say nothing about failures at all. Older failures "
+                "and earlier topics were already reported; do not repeat them "
+                "unless the user asks. If a decision was made, say what it was "
+                "and why."
+            )
+        else:
+            # Plain conversation. No worker ran, and the reply must neither
+            # mention that machinery nor pretend anything was done.
+            prompt = (
+                f"{briefing}\n\nRecent conversation:\n{recent}\n\n"
+                f"User: {message}\n\n"
+                "Reply to the user directly and naturally, as in conversation; "
+                "never mention tasks, workers or requests. Nothing was done, made "
+                "or looked up for this message — if the user asked for that, say "
+                "so plainly and say what you would need, or that it is beyond you; "
+                "never imply it happened. Earlier topics were already dealt with; "
+                "do not bring them back up unless asked."
+            )
         return await llm.complete(prompt, self.cfg, system=self.persona, timeout=600)
 
     def _remember(self, message: str, reply: str, delivered: list[dict]) -> None:
         self.history.append(("User", message))
         self.history.append(("Alfred", reply))
         self.history = self.history[-12:]
-        self.state.log_turn("User", message)
+        self.state.log_turn("User", message, at=self._asked_at)
         self.state.log_turn("Alfred", reply)
         self.state.mark_delivered([n["id"] for n in delivered])
 
@@ -355,10 +564,25 @@ class Alfred:
 
     # ---- enrollment ------------------------------------------------------
 
+    async def live_workers_by_node(self) -> dict[str, WorkerAdvert]:
+        """Heartbeating workers keyed by the machine they run on."""
+        return {
+            w.node_id or w.worker_id: w
+            for w in await self.bus.workers()
+            if w.capabilities
+        }
+
     async def unassigned_nodes(self) -> list[NodeProfile]:
-        """Machines that have announced themselves but have no job yet."""
+        """Machines that have announced themselves but have no job yet.
+
+        A machine whose worker already heartbeats with capabilities — one
+        started from its own config file rather than enrolled — has a job,
+        and is not nagged about."""
+        working = await self.live_workers_by_node()
         out = []
         for profile in await self.bus.seen_nodes():
+            if profile.node_id in working:
+                continue
             if await self.bus.get_assignment(profile.node_id) is None:
                 out.append(profile)
         return out
@@ -400,11 +624,18 @@ class Alfred:
         if row is None:
             return f"pending change #{action_id} is not awaiting approval"
         task = Task.from_json(row["task_json"])
-        task.inputs["_approved"] = True           # the mark only this path sets
+        task.inputs["_approved"] = True           # the mark this path and a grant set
+        # The owner's approval is taken atomically once, which is the very
+        # guarantee the key exists to provide.
+        task.idempotency_key = task.idempotency_key or f"approved-action:{action_id}"
         result = await self._dispatch(task)
         self.state.settle_action(action_id, result.ok, result.summary or result.error or "")
         outcome = result.summary if result.ok else f"failed: {result.error}"
-        self.state.notice("os_change", f"Change #{action_id}: {outcome}", row["project_id"])
+        if task.capability == "ui.act":
+            self.hands.record(row["description"], hands_outcome(result), result.ok)
+            self.state.notice("hands", f"Hands #{action_id}: {outcome}", row["project_id"])
+        else:
+            self.state.notice("os_change", f"Change #{action_id}: {outcome}", row["project_id"])
         return outcome
 
     def decline_action(self, action_id: int) -> str:
@@ -429,16 +660,15 @@ class Alfred:
     async def _write_status(self) -> None:
         """Heartbeat for the dashboard: current household truth to a file the
         status board reads. Best-effort; never breaks supervision."""
-        import json, time, tempfile, os, pathlib
         try:
             now = time.time()
-            workers = {w.worker_id: w for w in await self.bus.workers()}
+            workers = await self.live_workers_by_node()
             seen = {p.node_id: p for p in await self.bus.seen_nodes()}
             nodes = []
             for row in self.state.all_nodes():
                 nid = row["node_id"]
-                last = row.get("last_seen") or 0
-                online = (now - last) < 30 if last else (nid in seen)
+                last = seen[nid].seen_at if nid in seen else (row.get("last_seen") or 0)
+                online = nid in seen or nid in workers
                 try:
                     caps = json.loads(row.get("capabilities") or "[]")
                 except Exception:
@@ -462,7 +692,7 @@ class Alfred:
                 "nodes": nodes,
                 "in_flight": self.state.in_flight_tasks(),
             }
-            path = pathlib.Path.home() / ".alfred" / "status.json"
+            path = Path.home() / ".alfred" / "status.json"
             path.parent.mkdir(exist_ok=True)
             tmp = path.with_suffix(".tmp")
             tmp.write_text(json.dumps(status))
@@ -506,6 +736,51 @@ class Alfred:
                                note="seen, not yet assigned"),
                     profile,
                 )
+
+        # A worker that arrived with its own config file is as much a member
+        # of the household as an enrolled one: record it so /nodes, the
+        # dashboard and the enrollment proposals know what it covers.
+        seen = {p.node_id: p for p in await self.bus.seen_nodes()}
+        live = await self.live_workers_by_node()
+        for node_id, worker in live.items():
+            known = self.state.known_node(node_id)
+            if known and json.loads(known.get("capabilities") or "[]") == worker.capabilities:
+                continue
+            profile = seen.get(node_id)
+            if profile is None:
+                continue
+            if not known and node_id != self.local_node_id:
+                self.state.notice(
+                    "new_node",
+                    f"{worker.worker_id} ({profile.hostname}) joined offering "
+                    f"{', '.join(worker.capabilities)}",
+                )
+            self.state.record_node(
+                Assignment(node_id=node_id, name=worker.worker_id,
+                           capabilities=list(worker.capabilities),
+                           note="configured on the machine itself"),
+                profile,
+            )
+
+        # Comings and goings, once per transition: the owner hears that the
+        # zenbook dropped off before he asks for the work only it can do.
+        online = set(live)
+        assigned = {
+            r["node_id"]: r for r in self.state.all_nodes()
+            if r.get("capabilities") not in (None, "", "[]")
+        }
+        for node_id in (self._online_nodes - online) & set(assigned):
+            self.state.notice("node_offline",
+                              f"{assigned[node_id].get('name') or node_id} went offline")
+        for node_id in online & self._offline_nodes:
+            self.state.notice("node_online", f"{live[node_id].worker_id} is back online")
+        # A machine enrolled this tick has not "gone" anywhere: its first
+        # heartbeat is a join (already announced), not a return. Likewise the
+        # first tick after boot, before anyone has had time to heartbeat.
+        fresh = set(assigned) if self._assigned_seen is None else set(assigned) - self._assigned_seen
+        self._online_nodes = online
+        self._offline_nodes = set(assigned) - online - fresh
+        self._assigned_seen = set(assigned)
 
         cutoff = time.time() - STALE_PROJECT_DAYS * 86400
         for project in self.state.active_projects():

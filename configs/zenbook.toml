@@ -1,12 +1,17 @@
 # ZENBOOK — the one machine besides the desktop running its own model.
 # Nothing here says "atlas". Move this file, and engineering work moves.
 
+# Start it with:   python run_worker.py --config configs/zenbook.toml
+
 [bus]
 kind = "nats"
-url  = "nats://192.168.1.239:4222"
+url  = "auto"       # listen for the desktop's LAN beacon; survives DHCP changes.
+# url = "nats://192.168.1.239:4222"   # or pin the desktop's address (if
+#                                       # broadcast is blocked on your Wi-Fi)
 
 [core]
-artifact_dir = "/mnt/alfred"
+artifact_dir = "~/.alfred/artifacts"  # finished files land here, on this machine
+# artifact_dir = "/mnt/alfred"        # shared mount, if every machine has one
 provider   = "ollama"
 model      = "qwen2.5-coder:7b"       # 7b, not 14b: most Zenbooks are CPU-only
 ollama_url = "http://127.0.0.1:11434"

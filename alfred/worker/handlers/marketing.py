@@ -77,14 +77,22 @@ def briefs_dir(cfg: dict) -> Path:
     return Path(configured).expanduser() if configured else DEFAULT_BRIEFS_DIR
 
 
+def _brief_files(cfg: dict) -> list[Path]:
+    folder = briefs_dir(cfg)
+    if not folder.is_dir():
+        return []
+    return sorted(p for p in folder.glob("*.md") if not p.name.startswith("README"))
+
+
+def list_briefs(cfg: dict) -> list[str]:
+    return [p.stem for p in _brief_files(cfg)]
+
+
 def load_brief(cfg: dict, product: str | None) -> tuple[str | None, str]:
     """Return (brief_name, brief_text). Picks the only brief when there is
     exactly one and none was named; otherwise a missing brief is a missing
     brief — the draft proceeds ungrounded and says so."""
-    folder = briefs_dir(cfg)
-    if not folder.is_dir():
-        return None, ""
-    briefs = sorted(p for p in folder.glob("*.md") if not p.name.startswith("README"))
+    briefs = _brief_files(cfg)
     if product:
         slug = product.strip().lower().replace(" ", "-")
         for path in briefs:
@@ -380,7 +388,8 @@ async def marketing_audit(task: Task, cfg: dict) -> TaskResult:
     path.write_text(report)
 
     summary = (
-        f"{final_url}: {len(issues)} mechanical issue(s).\n"
+        f"{final_url}: {len(issues)} mechanical issue(s), each measured from the "
+        "live page just now (these are facts, not opinions).\n"
         + "\n".join(f"- {i}" for i in issues[:8])
         + (f"\n- ...and {len(issues) - 8} more in {path.name}" if len(issues) > 8 else "")
         + "\n\nMessage: " + critique

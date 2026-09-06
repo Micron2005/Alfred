@@ -11,10 +11,12 @@ from __future__ import annotations
 import asyncio
 import re
 from pathlib import Path
+from urllib.request import url2pathname
+from urllib.parse import urlparse
 
 from alfred import llm
 from alfred.contracts import Task, TaskResult
-from alfred.worker.handlers import fail, handler, ok
+from alfred.worker.handlers import fail, handler, ok, refuse
 
 
 def _artifact_path(cfg: dict, task: Task, name: str) -> Path:
@@ -42,7 +44,7 @@ async def code_write(task: Task, cfg: dict) -> TaskResult:
     lines = code.count("\n") + 1
     return ok(
         task,
-        summary=f"Wrote {filename} ({lines} lines). Untested.",
+        summary=f"Wrote {path} ({lines} lines). Untested.",
         artifacts=[path.as_uri()],
         data={"lines": lines, "language": task.inputs.get("language", "python")},
     )
@@ -56,17 +58,34 @@ async def code_test(task: Task, cfg: dict) -> TaskResult:
     than one language model vouching for another.
     """
     workdir = task.inputs.get("workdir")
+    # The usual case: testing what an upstream code.write just produced. Its
+    # artifacts arrive as file URIs, and the planner cannot know that path in
+    # advance, so the test runs where the code actually landed.
+    produced = [Path(url2pathname(urlparse(u).path)) for u in task.artifacts
+                if u.startswith("file:")]
+    if produced and not (workdir and any(p.parent == Path(workdir).resolve()
+                                         for p in produced)):
+        workdir = str(produced[0].parent)
     if not workdir or not Path(workdir).is_dir():
-        return fail(task, f"workdir not found: {workdir!r}")
+        return refuse(task, f"workdir not found: {workdir!r}")
 
     command = task.inputs.get("command", "python -m pytest -q")
+    feed = str(task.inputs.get("stdin") or "")
     proc = await asyncio.create_subprocess_shell(
         command,
         cwd=workdir,
+        stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
-    raw, _ = await proc.communicate()
+    try:
+        raw, _ = await asyncio.wait_for(
+            proc.communicate(feed.encode()), timeout=min(task.timeout_s, 600))
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return fail(task, f"`{command}` did not finish within {min(task.timeout_s, 600)}s "
+                          "(waiting for input, or an infinite loop?)")
     output = raw.decode(errors="replace")
 
     log_path = _artifact_path(cfg, task, "test-output.log")

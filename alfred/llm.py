@@ -70,10 +70,17 @@ def _ollama(prompt, system, model, cfg, timeout, json_mode, images=None):
 
 
 def _openai(prompt, system, model, cfg, timeout, json_mode, images=None):
+    user_content = prompt
+    if images:
+        user_content = [{"type": "text", "text": prompt}] + [
+            {"type": "image_url",
+             "image_url": {"url": f"data:image/png;base64,{b64}"}}
+            for b64 in images
+        ]
     payload = {
         "model": model,
         "messages": [{"role": "system", "content": system},
-                     {"role": "user", "content": prompt}],
+                     {"role": "user", "content": user_content}],
         "temperature": 0.1 if json_mode else 0.7,
         "max_tokens": cfg.get("max_tokens", 4096),
     }
@@ -86,6 +93,19 @@ def _openai(prompt, system, model, cfg, timeout, json_mode, images=None):
 
 
 PROVIDERS = {"ollama": _ollama, "openai": _openai}
+
+
+def vision_model(cfg: dict) -> str:
+    """Which model gets the pictures. Ollama needs a dedicated one; a hosted
+    chat model usually takes images itself, so it is the fallback there."""
+    explicit = (cfg.get("worker", {}).get("vision_model")
+                or cfg.get("core", {}).get("vision_model"))
+    if explicit:
+        return explicit
+    core = cfg.get("core", {})
+    if core.get("provider", "ollama") == "openai":
+        return core.get("model", "gpt-4o-mini")
+    return "llava:7b"
 
 
 async def complete(
