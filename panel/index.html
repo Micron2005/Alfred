@@ -65,6 +65,9 @@
   button:hover { border-color: var(--accent); box-shadow: var(--glow); }
   button.primary { background: var(--accent); color: #03131a; border-color: var(--accent); font-weight: 700; box-shadow: var(--glow); }
   button.danger { border-color: var(--off); color: var(--off); }
+  button.stop { background: var(--off); color: #fff; border-color: var(--off); font-weight: 700; font-size: 13px; letter-spacing: 3px;
+                padding: 9px 18px; box-shadow: 0 0 12px rgba(255,77,94,.5); }
+  button.stop:hover { box-shadow: 0 0 18px rgba(255,77,94,.8); }
   button:disabled { opacity: .4; cursor: default; box-shadow: none; }
   input, textarea { background: #03080d; color: var(--text); border: 1px solid var(--line2);
                     border-radius: 2px; padding: 7px 10px; font: inherit; width: 100%; }
@@ -93,6 +96,17 @@
   .warnbox { border: 1px solid var(--warn); border-left-width: 3px; padding: 8px 10px; margin: 6px 0;
              font-size: 12px; line-height: 1.5; background: rgba(255,176,32,.05); }
   .warnbox b { color: var(--warn); }
+  .hand { width: 9px; height: 9px; border-radius: 2px; background: var(--dim); flex: none; }
+  .hand.driving { background: var(--off); box-shadow: 0 0 8px var(--off); animation: blink-red 1.2s infinite; }
+  @keyframes blink-red { 50% { opacity: .35; } }
+  #drivebox { margin-top: 8px; padding: 10px; border: 1px solid var(--off); background: rgba(255,77,94,.06); display: none; }
+  #drivebox.on { display: block; }
+  #countdown { font-size: 26px; letter-spacing: 4px; color: var(--off); text-shadow: 0 0 10px rgba(255,77,94,.6); }
+  #driverow { flex-wrap: wrap; }
+  #minutes { width: 64px; text-align: center; }
+  .did { font-size: 11.5px; color: #a9c9d8; padding: 3px 0; border-top: 1px solid var(--line); line-height: 1.45; }
+  .did.bad { color: var(--off); }
+  .did .t { color: var(--dim); margin-right: 6px; }
 
   /* ---- console ---- */
   #consolebar { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px;
@@ -156,6 +170,7 @@
     <div class="ro"><span class="k">Bus</span><span class="v" id="busline">…</span></div>
     <div class="ro"><span class="k">Machines</span><span class="v" id="machines">…</span></div>
     <div class="ro" id="eyes" title="Whether Alfred is looking at this screen right now"><span class="k">Eyes</span><span class="v"><span class="eye"></span><span id="eyestext">…</span></span></div>
+    <div class="ro" id="handsro" title="Whether Alfred may touch the mouse and keyboard without asking"><span class="k">Hands</span><span class="v"><span class="hand"></span><span id="handstext">…</span></span></div>
     <div class="ro"><span class="k">Approvals</span><span class="v" id="approvals">…</span></div>
     <div class="ro"><span class="k">Project</span><span class="v" id="project">—</span></div>
     <div class="ro" id="clock"><span class="k">Local time</span><span class="v" id="clocktext"></span></div>
@@ -193,6 +208,21 @@
       <button id="lookbtn" title="Alfred takes a fresh look and tells you what he sees">What's on my screen?</button>
     </div>
     <div class="glance" id="glance"></div>
+  </div>
+  <div class="card">
+    <h2>Hands</h2>
+    <div class="hint" id="handsline">…</div>
+    <div class="row" id="driverow" style="margin-top:6px">
+      <span class="tag">Drive for</span>
+      <input type="number" id="minutes" min="1" max="60" value="5">
+      <span class="tag">min</span>
+      <button id="drivebtn" title="Until the clock runs out, mouse and keyboard actions run without an approval card">Let Alfred drive</button>
+    </div>
+    <div id="drivebox">
+      <div class="row"><span id="countdown">00:00</span><button class="stop" id="stopbtn" style="margin-left:auto">STOP</button></div>
+      <div class="hint">Alfred is driving. Every action is logged below. STOP ends it at once.</div>
+    </div>
+    <div id="recenthands"></div>
   </div>
   <div class="card">
     <h2>Needs your approval</h2>
@@ -439,6 +469,55 @@
   };
   $("lookbtn").onclick = () => send("What's on my screen right now?");
 
+  // ---- hands ------------------------------------------------------------
+  // The grant's end is kept as a local deadline so the countdown ticks every
+  // second between status polls, and reads 00:00 the moment it is over.
+  let driveUntil = 0;
+  const mmss = (s) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+  function renderHands(hands) {
+    const dot = $("handsro").querySelector(".hand");
+    if (!hands) { dot.className = "hand"; $("handstext").textContent = "unknown"; return; }
+    driveUntil = hands.driving ? Date.now() + hands.remaining_s * 1000 : 0;
+    tickHands();
+    $("minutes").max = hands.max_minutes || 60;
+    const recent = (hands.recent || []).slice(-6).reverse();
+    $("recenthands").innerHTML = recent.map((r) =>
+      `<div class="did${r.ok ? "" : " bad"}"><span class="t">${esc(hhmmss(r.at))}</span>${esc(r.what)} — ${esc(r.outcome)}</div>`).join("");
+  }
+  function tickHands() {
+    const dot = $("handsro").querySelector(".hand");
+    const left = driveUntil ? Math.max(0, Math.round((driveUntil - Date.now()) / 1000)) : 0;
+    const driving = left > 0;
+    dot.className = driving ? "hand driving" : "hand";
+    $("handstext").textContent = driving ? `driving · ${mmss(left)}` : "ask first";
+    $("handstext").parentElement.className = driving ? "v hot" : "v";
+    $("drivebox").className = driving ? "on" : "";
+    $("countdown").textContent = mmss(left);
+    $("driverow").style.display = driving ? "none" : "";
+    $("handsline").textContent = driving
+      ? "Alfred may move the mouse, type and open or close windows on this desktop without asking, until the clock runs out. Terminals stay off limits."
+      : "Every mouse, keyboard or window action Alfred plans is parked under “Needs your approval” first. Or let him drive for a while.";
+    if (!driving) driveUntil = 0;
+  }
+  $("drivebtn").onclick = async () => {
+    const minutes = Math.max(1, Math.min(Number($("minutes").max) || 60, Number($("minutes").value) || 5));
+    try {
+      const hands = await api("/api/hands/drive", {method: "POST", body: {minutes}});
+      if (status) status.hands = hands;
+      renderHands(hands);
+      say("sys", `Alfred may drive for ${minutes} minute${minutes === 1 ? "" : "s"}. Press STOP to end it early.`);
+    } catch (err) { say("err", err.message); }
+  };
+  $("stopbtn").onclick = async () => {
+    driveUntil = 0; tickHands();   // the panel stops first; the server confirms
+    try {
+      const hands = await api("/api/hands/stop", {method: "POST", body: {}});
+      if (status) status.hands = hands;
+      renderHands(hands);
+      say("sys", "STOP. Hands off; every action needs your approval again.");
+    } catch (err) { say("err", err.message); }
+  };
+
   // ---- other machines ---------------------------------------------------
   function renderDoor(w) {
     // Inside WSL, the bus lives in a Linux VM Windows has to forward to.
@@ -486,7 +565,7 @@ cd Alfred &amp;&amp; ./install.sh worker</pre>
       status = await api("/api/status");
       renderNodes(status.nodes); renderActions(status.pending_actions);
       renderNotices(status.recent_notices || status.notices); renderJoin(status.bus);
-      renderEyes(status.eyes);
+      renderEyes(status.eyes); renderHands(status.hands);
       const online = status.nodes.filter((n) => n.online).length;
       $("machines").textContent = `${online} of ${status.nodes.length} online`;
       $("busline").textContent = status.bus.kind === "nats" ? (status.bus.wsl && !status.bus.wsl.ok ? "door closed" : "open") : "local only";
@@ -498,7 +577,7 @@ cd Alfred &amp;&amp; ./install.sh worker</pre>
     }
   }
   $("refresh").onclick = refresh;
-  const tick = () => { $("clocktext").textContent = hhmmss(); };
+  const tick = () => { $("clocktext").textContent = hhmmss(); tickHands(); };
   tick(); setInterval(tick, 1000);
 
   (async () => {

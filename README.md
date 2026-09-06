@@ -50,6 +50,19 @@ the switch -- **Look away** / **Eyes on**, also as spoken commands -- and
 machine and nowhere else; seeing grants no permission to act, and other
 machines' screens are looked at only when asked (`screen.view`). See SIGHT.md.
 
+**Hands.** On the desktop, Alfred can move and click the mouse, type, press
+key combinations and open, focus or close windows (`ui.act`; `ui.windows`
+reads what is open). Under WSL this drives the Windows desktop through
+`powershell.exe`; on a Linux desktop it uses `xdotool`. Every action is parked
+under **Needs your approval** on the page, exactly like an OS change, unless
+you press **Let Alfred drive** (or say "drive for 10 minutes"): then actions
+run without a card until the countdown ends, each one logged on the Hands
+card, and **STOP** (or saying "stop") ends the grant at once and drops the
+rest of the plan. The catalog is closed: there is no action that runs a
+command, and typing into a terminal, opening a shell, or closing Alfred's own
+page is refused even with approval. The hands are the desktop's alone; an
+enrolling laptop is never given `ui.*`.
+
 The page at http://127.0.0.1:8710 (`panel/index.html`, served when the Micron
 OS shell is not installed, always at `/panel`) is the whole control surface:
 chat, which machines are online, "Give it a job" for a new one, approve or

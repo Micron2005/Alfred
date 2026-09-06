@@ -61,6 +61,10 @@ capabilities = [
     "cad.measure", "cad.variables", "cad.export", "cad.evaluate",
     "cad.generate", "cad.inspect",
     "os.observe", "os.apply",
+    # Hands on THIS desktop (mouse, keyboard, windows; Windows via powershell.exe
+    # from WSL). ui.act is parked for approval on the panel unless the owner
+    # says "drive for N minutes"; STOP on the panel ends that at once.
+    "ui.windows", "ui.act",
     "media.inspect",
     # Image and video work once llava:7b is pulled; uncomment then:
     # "vision.describe", "media.video",

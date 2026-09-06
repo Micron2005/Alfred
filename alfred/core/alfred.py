@@ -29,6 +29,7 @@ from alfred.contracts import (
     Assignment, NodeProfile, Task, TaskResult, WorkerAdvert, _new_id,
 )
 from alfred.core import enrollment, planner, scheduler
+from alfred.core.hands import Hands
 from alfred.core.sight import Sight
 from alfred.core.state import State
 from alfred.probe import node_id as local_node_id
@@ -38,6 +39,29 @@ log = logging.getLogger("alfred.core")
 
 PERSONA_PATH = Path(__file__).with_name("persona.md")
 STALE_PROJECT_DAYS = 7
+
+# Capabilities that change the owner's machine or touch his desktop: parked
+# for approval, never dispatched on Alfred's say-so.
+GATED = frozenset({"os.apply", "ui.act"})
+
+
+def hands_outcome(result: TaskResult) -> str:
+    """The short past-tense phrase for the Hands card, next to the description
+    it already shows."""
+    if not result.ok:
+        return f"failed: {result.error}"
+    return str(result.data.get("did") or result.summary or "done")
+
+
+def describe_gated(task: Task) -> str:
+    """The sentence on the approval card."""
+    action = str(task.inputs.get("action", "?"))
+    args = task.inputs.get("args") or {}
+    if task.capability == "ui.act":
+        from alfred.worker.handlers.hands import describe_action
+    else:
+        from alfred.worker.handlers.oscontrol import describe_action
+    return describe_action(action, args)
 
 
 class Alfred:
@@ -58,6 +82,7 @@ class Alfred:
         self._talking = False   # a reply is being composed; the eyes hold still
         self._asked_at = 0.0    # when the message being answered arrived
         self.sight = Sight(cfg, self.state, busy=lambda: self._talking)
+        self.hands = Hands()
 
     # ---- dispatch --------------------------------------------------------
 
@@ -65,20 +90,39 @@ class Alfred:
         """Submit, wait, retry, and let the local worker take over if nobody
         else does. The fallback is not a special path — the desktop's own
         worker claims from the same queue as everyone else, just later."""
-        # OS changes never run on Alfred's judgment. Park them; the owner's
-        # approval (shell button or /approve) is what dispatches them.
-        if task.capability == "os.apply" and not task.inputs.get("_approved"):
-            from alfred.worker.handlers.oscontrol import describe_action
-            description = describe_action(
-                str(task.inputs.get("action", "?")), task.inputs.get("args") or {})
-            action_id = self.state.park_action(
-                task.project_id, description, task.to_json())
-            return TaskResult(
-                task_id=task.id, worker_id="owner-approval", status="pending",
-                summary=f"'{description}' is queued as pending change #{action_id}, "
-                        "awaiting your approval.",
-            )
+        # OS changes and touches on the desktop never run on Alfred's
+        # judgment. Park them; the owner's approval (shell button or
+        # /approve) is what dispatches them. The one exception is a standing
+        # "drive for N minutes" grant on the hands, and STOP ends that.
+        granted = False
+        if task.capability in GATED and not task.inputs.get("_approved"):
+            description = describe_gated(task)
+            if task.capability == "ui.act" and self.hands.stopped_since(self._asked_at):
+                return TaskResult(
+                    task_id=task.id, worker_id="owner-stop", status="rejected",
+                    error=f"'{description}' not done: the owner pressed STOP",
+                )
+            if task.capability == "ui.act" and self.hands.driving:
+                task.inputs["_approved"] = True
+                task.inputs["_granted"] = True
+                granted = True
+            else:
+                action_id = self.state.park_action(
+                    task.project_id, description, task.to_json())
+                return TaskResult(
+                    task_id=task.id, worker_id="owner-approval", status="pending",
+                    summary=f"'{description}' is queued as pending change #{action_id}, "
+                            "awaiting your approval.",
+                )
+        if granted:
+            result = await self._dispatch_now(task)
+            self.hands.record(description, hands_outcome(result), result.ok)
+            outcome = result.summary if result.ok else f"failed: {result.error}"
+            self.state.notice("hands", f"Hands (driving): {outcome}", task.project_id)
+            return result
+        return await self._dispatch_now(task)
 
+    async def _dispatch_now(self, task: Task) -> TaskResult:
         while True:
             self.state.enqueue(task)
             # The lease is what lets the supervisor notice an abandoned task.
@@ -284,6 +328,8 @@ class Alfred:
         "remove", "set up", "setup", "configure", "run ", "test", "fix",
         "add ", "check", "show me", "list", "how much", "how many", "what is",
         "open", "look at", "summar", "compare", "price", "pricing",
+        "click", "type ", "press ", "close", "window", "mouse", "keyboard",
+        "scroll", "switch to", "bring up", "launch",
     )
 
     def _might_need_work(self, message: str) -> bool:
@@ -295,7 +341,7 @@ class Alfred:
     async def converse(self, message: str, project_id: str | None = None,
                        attachments: list[str] | None = None) -> str:
         self._asked_at = time.time()
-        switched = self.sight.command(message)
+        switched = self.sight.command(message) or self.hands.command(message)
         if switched:
             self._remember(message, switched, [])
             return switched
@@ -308,7 +354,7 @@ class Alfred:
     async def _converse(self, message: str, project_id: str | None,
                         attachments: list[str] | None) -> str:
         briefing = self.state.briefing(project_id) if project_id else ""
-        for part in (self._owner_briefing(), self.sight.briefing()):
+        for part in (self._owner_briefing(), self.sight.briefing(), self.hands.briefing()):
             if part:
                 briefing = (briefing + "\n\n" + part) if briefing else part
 
@@ -578,14 +624,18 @@ class Alfred:
         if row is None:
             return f"pending change #{action_id} is not awaiting approval"
         task = Task.from_json(row["task_json"])
-        task.inputs["_approved"] = True           # the mark only this path sets
+        task.inputs["_approved"] = True           # the mark this path and a grant set
         # The owner's approval is taken atomically once, which is the very
         # guarantee the key exists to provide.
         task.idempotency_key = task.idempotency_key or f"approved-action:{action_id}"
         result = await self._dispatch(task)
         self.state.settle_action(action_id, result.ok, result.summary or result.error or "")
         outcome = result.summary if result.ok else f"failed: {result.error}"
-        self.state.notice("os_change", f"Change #{action_id}: {outcome}", row["project_id"])
+        if task.capability == "ui.act":
+            self.hands.record(row["description"], hands_outcome(result), result.ok)
+            self.state.notice("hands", f"Hands #{action_id}: {outcome}", row["project_id"])
+        else:
+            self.state.notice("os_change", f"Change #{action_id}: {outcome}", row["project_id"])
         return outcome
 
     def decline_action(self, action_id: int) -> str:
