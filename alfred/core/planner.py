@@ -79,6 +79,19 @@ INPUT_HINTS = {
         " e.g. pkg_install {\"package\"}, service_ctl {\"name\", \"verb\"}, "
         "file_write {\"path\", \"content\"}; needs_idempotency: true"
     ),
+    "ui.windows": (
+        "inputs: {} — screen size, the window in front, every open window on the "
+        "owner's desktop; run it FIRST (and again after opening something) before any ui.act"
+    ),
+    "ui.act": (
+        "inputs: {\"action\": one of move|click|scroll|type|key|open_app|focus_window|"
+        "close_window, \"args\": {...}} — ONE action per task, chained with depends_on: "
+        "open_app {\"app\": \"notepad\"}, focus_window {\"title\": \"Notepad\"}, "
+        "type {\"text\"}, key {\"combo\": \"ctrl+s\"}, click {\"x\", \"y\", \"button\": "
+        "left|right, \"double\": bool}, scroll {\"amount\": int, down>0}, close_window "
+        "{\"title\"}. Only click at coordinates the owner gave or ui.windows reported; "
+        "prefer open_app/focus_window/key/type. Never a terminal."
+    ),
     "media.inspect": "inputs: {\"path\": str}",
     "marketing.audit": "inputs: {\"url\": str, \"product\": str (brief name, optional)}",
     "marketing.draft": (
@@ -181,9 +194,13 @@ def _build(
             inputs=inputs if isinstance(inputs, dict) else {},
             timeout_s=_int(entry.get("timeout_s"), 300, 30, 3600),
         )
-        if (entry.get("needs_idempotency") or capability == "os.apply"
+        if (entry.get("needs_idempotency") or capability in ("os.apply", "ui.act")
                 or capability.startswith(("hw.", "cad."))):
             task.idempotency_key = f"{project_id or 'adhoc'}:{entry.get('ref')}:{prompt_text[:60]}"
+        if capability == "ui.act":
+            # A click that failed is not re-clicked on Alfred's initiative.
+            task.max_retries = 0
+            task.timeout_s = min(task.timeout_s, 120)
         by_ref[str(entry.get("ref") or task.id)] = task
 
     for entry in entries:
@@ -222,7 +239,7 @@ def verify(task: Task, result: TaskResult) -> tuple[bool, str]:
     exists, use the real check. Where none exists, say so plainly and let
     Alfred read the artifact himself.
     """
-    if result.status == "pending" and task.capability == "os.apply":
+    if result.status == "pending" and task.capability in ("os.apply", "ui.act"):
         return True, ("NOT DONE: parked as a pending change; nothing happens until "
                       "the owner approves it")
 

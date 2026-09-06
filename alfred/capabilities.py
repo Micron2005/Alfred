@@ -26,6 +26,8 @@ class Capability:
     needs_model: bool = False    # needs an LLM, local or remote
     needs_gpu: bool = False
     weight: str = "light"        # light | medium | heavy
+    owner_only: bool = False     # never handed to an enrolling machine; the
+                                 # owner lists it in that machine's config himself
 
 
 MANIFEST: dict[str, Capability] = {c.name: c for c in [
@@ -130,6 +132,17 @@ MANIFEST: dict[str, Capability] = {c.name: c for c in [
         "owner's approval before it runs.",
         binaries=["systemctl"], min_ram_gb=0.5, weight="light",
     ),
+    Capability(
+        "ui.windows", "Read-only: screen size, the window in front and the open "
+        "windows on this machine's desktop.",
+        min_ram_gb=0.5, weight="light", owner_only=True,
+    ),
+    Capability(
+        "ui.act", "Alfred's hands on this machine's desktop: move and click the "
+        "mouse, type, press keys, open/focus/close windows. ALWAYS requires the "
+        "owner's approval or a timed driving grant; never a terminal.",
+        min_ram_gb=0.5, weight="light", owner_only=True,
+    ),
 ]}
 
 WEIGHT_MIN_RAM = {"light": 0.5, "medium": 4.0, "heavy": 8.0}
@@ -144,6 +157,8 @@ def eligible_for(profile) -> list[str]:
     """
     out: list[str] = []
     for cap in MANIFEST.values():
+        if cap.owner_only:
+            continue
         if any(b not in profile.binaries for b in cap.binaries):
             continue
         if any(p not in profile.python_pkgs for p in cap.python_pkgs):

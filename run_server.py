@@ -47,6 +47,7 @@ from alfred.bus.hosting import stop_server
 from alfred.bus.nats_bus import BusUnreachable, host_port
 from alfred.config import load
 from alfred.contracts import Assignment
+from alfred.core import hands as hands_core
 from alfred.core.alfred import Alfred
 from alfred.worker.runtime import WorkerRuntime
 from alfred import shell_lock, wsl
@@ -208,6 +209,7 @@ class Bridge:
                 "bus": {"kind": self.alfred.cfg["bus"]["kind"], "join_url": self.join_url,
                         "wsl": await self.door()},
                 "eyes": self.alfred.sight.status(),
+                "hands": self.alfred.hands.status(),
                 "nodes": nodes,
                 "workers": workers,
                 "projects": self.alfred.state.active_projects(),
@@ -258,6 +260,8 @@ def make_handler(bridge: Bridge):
                 self._json(200, {"turns": bridge.alfred.state.recent_turns_at(limit=40)})
             elif self.path == "/api/eyes":
                 self._json(200, bridge.alfred.sight.status())
+            elif self.path == "/api/hands":
+                self._json(200, bridge.alfred.hands.status())
             elif self.path == "/api/status":
                 try:
                     self._json(200, bridge.status())
@@ -441,6 +445,24 @@ def make_handler(bridge: Bridge):
                     self._json(200, bridge.set_eyes(bool(payload.get("open", True))))
                 except Exception as exc:
                     self._json(500, {"error": str(exc)})
+                return
+            if self.path == "/api/hands/drive":
+                # "Let Alfred drive for N minutes": ui.act runs without a card
+                # until the clock runs out or STOP is pressed.
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length) or b"{}")
+                    minutes = float(payload.get("minutes", hands_core.DEFAULT_MINUTES))
+                    self._json(200, bridge.alfred.hands.grant(minutes))
+                except (ValueError, TypeError) as exc:
+                    self._json(400, {"error": f"minutes must be a number: {exc}"})
+                except Exception as exc:
+                    self._json(500, {"error": str(exc)})
+                return
+            if self.path == "/api/hands/stop":
+                # The kill switch. Written from this thread on purpose: it must
+                # land even while the event loop is busy driving.
+                self._json(200, bridge.alfred.hands.stop())
                 return
             if self.path == "/api/bridge":
                 # WSL only: ask Windows (one UAC prompt) to forward the bus

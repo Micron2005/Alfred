@@ -35,6 +35,7 @@ HANDLER_MODULES = [
     "alfred.worker.handlers.oscontrol",
     "alfred.worker.handlers.media",
     "alfred.worker.handlers.screen",
+    "alfred.worker.handlers.hands",
     "alfred.worker.handlers.speech",
 ]
 
