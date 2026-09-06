@@ -45,6 +45,14 @@ STALE_PROJECT_DAYS = 7
 GATED = frozenset({"os.apply", "ui.act"})
 
 
+def hands_outcome(result: TaskResult) -> str:
+    """The short past-tense phrase for the Hands card, next to the description
+    it already shows."""
+    if not result.ok:
+        return f"failed: {result.error}"
+    return str(result.data.get("did") or result.summary or "done")
+
+
 def describe_gated(task: Task) -> str:
     """The sentence on the approval card."""
     action = str(task.inputs.get("action", "?"))
@@ -108,8 +116,8 @@ class Alfred:
                 )
         if granted:
             result = await self._dispatch_now(task)
+            self.hands.record(description, hands_outcome(result), result.ok)
             outcome = result.summary if result.ok else f"failed: {result.error}"
-            self.hands.record(description, outcome, result.ok)
             self.state.notice("hands", f"Hands (driving): {outcome}", task.project_id)
             return result
         return await self._dispatch_now(task)
@@ -624,7 +632,7 @@ class Alfred:
         self.state.settle_action(action_id, result.ok, result.summary or result.error or "")
         outcome = result.summary if result.ok else f"failed: {result.error}"
         if task.capability == "ui.act":
-            self.hands.record(row["description"], outcome, result.ok)
+            self.hands.record(row["description"], hands_outcome(result), result.ok)
             self.state.notice("hands", f"Hands #{action_id}: {outcome}", row["project_id"])
         else:
             self.state.notice("os_change", f"Change #{action_id}: {outcome}", row["project_id"])
