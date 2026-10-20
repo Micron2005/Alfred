@@ -71,13 +71,18 @@ INPUT_HINTS = {
     "os.observe": (
         "inputs: {\"what\": one of disk|memory|cpu|services|failed|packages|"
         "network|kernel|logs} — one task per observation; use this, not "
-        "research, for anything about THIS machine"
+        "research, for anything about THIS machine. On a Windows PC (also when "
+        "Alfred runs in WSL) it reports Windows: drives, RAM, Windows services, "
+        "winget updates; add \"on\": \"linux\" only when the owner means the WSL/Linux side"
     ),
     "os.apply": (
         "inputs: {\"action\": one of pkg_install|pkg_remove|pkg_upgrade|"
         "service_ctl|setting_set|file_write|self_update|house_edit, \"args\": {...}}"
         " e.g. pkg_install {\"package\"}, service_ctl {\"name\", \"verb\"}, "
-        "file_write {\"path\", \"content\"}; needs_idempotency: true"
+        "file_write {\"path\", \"content\"}; needs_idempotency: true. On Windows "
+        "packages go through winget (\"package\": a name like \"vscode\" or a winget id "
+        "like \"Microsoft.VisualStudioCode\"; pkg_upgrade takes an optional \"package\") and "
+        "service_ctl uses the Windows service name; \"on\": \"linux\" targets WSL instead"
     ),
     "ui.windows": (
         "inputs: {} — screen size, the window in front, every open window on the "

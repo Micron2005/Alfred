@@ -23,7 +23,7 @@ from alfred.contracts import NodeProfile
 PROBE_BINARIES = [
     "git", "python3", "gcc", "make", "docker", "ffmpeg",
     "freecadcmd", "FreeCADCmd", "openscad", "kicad",
-    "mosquitto_pub", "pandoc", "nvidia-smi", "ollama",
+    "mosquitto_pub", "pandoc", "nvidia-smi", "ollama", "powershell.exe", "winget",
 ]
 PROBE_PACKAGES = ["httpx", "pypdf", "paho", "psutil", "numpy", "scipy", "PIL"]
 

@@ -63,6 +63,18 @@ command, and typing into a terminal, opening a shell, or closing Alfred's own
 page is refused even with approval. The hands are the desktop's alone; an
 enrolling laptop is never given `ui.*`.
 
+**The machine itself, on Windows.** `os.observe` (disk, memory, cpu,
+services, failed, packages, network, kernel, logs) and `os.apply` work on
+Windows too: native Windows, or the desktop with Alfred in WSL, where they
+report and change the Windows side -- drives, RAM, Windows services, winget.
+"Is my PC low on space?" reads the C: drive; "install VS Code" is
+`winget install Microsoft.VisualStudioCode`, parked for approval like any OS
+change. Service changes ask Windows for administrator rights (one UAC prompt
+per change). WSL itself, PowerShell, winget, Ollama and Python cannot be
+removed, and core Windows services (WSL, networking, firewall, Defender,
+Remote Desktop, Windows Update...) cannot be stopped or disabled, approval
+or not. To mean the Linux VM instead, the task says `"on": "linux"`.
+
 The page at http://127.0.0.1:8710 (`panel/index.html`, served when the Micron
 OS shell is not installed, always at `/panel`) is the whole control surface:
 chat, which machines are online, "Give it a job" for a new one, approve or
