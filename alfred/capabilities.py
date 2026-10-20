@@ -123,14 +123,14 @@ MANIFEST: dict[str, Capability] = {c.name: c for c in [
     ),
     Capability(
         "os.observe", "Read-only look at this machine: disk, memory, services, "
-        "packages, logs. Safe, immediate.",
-        binaries=["systemctl"], min_ram_gb=0.5, weight="light",
+        "packages, logs. Safe, immediate. Linux or Windows.",
+        min_ram_gb=0.5, weight="light",
     ),
     Capability(
         "os.apply", "Change this machine: install/remove packages, control "
-        "services, desktop settings, write home files. ALWAYS requires the "
-        "owner's approval before it runs.",
-        binaries=["systemctl"], min_ram_gb=0.5, weight="light",
+        "services, desktop settings, write home files (apt/systemctl on Linux, "
+        "winget/services on Windows). ALWAYS requires the owner's approval before it runs.",
+        min_ram_gb=0.5, weight="light",
     ),
     Capability(
         "ui.windows", "Read-only: screen size, the window in front and the open "

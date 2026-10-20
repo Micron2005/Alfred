@@ -22,16 +22,25 @@ Actions are a closed catalog, not free-form shell. A language model given
 arbitrary sudo is a machine that will eventually delete something loved;
 a language model choosing from a catalog can propose only what the catalog
 can do.
+
+Two houses behind one catalog. On Linux the catalog runs apt, systemctl and
+friends. On Windows -- native, or the owner's desktop where Alfred lives in
+WSL -- it runs PowerShell and winget on the Windows side, because "is my PC
+low on space?" means the C: drive, not the Linux VM. Under WSL the task may
+say `"on": "linux"` to look at or change the VM instead.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+import platform
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
 
+from alfred import wsl
 from alfred.contracts import Task, TaskResult
 from alfred.worker.handlers import fail, handler, ok, refuse
 
@@ -121,6 +130,13 @@ async def os_observe(task: Task, cfg: dict) -> TaskResult:
     what = str(task.inputs.get("what", "")).lower() or _infer_observation(task.prompt)
     if what not in OBSERVATIONS:
         return refuse(task, f"unknown observation {what!r}; options: {', '.join(OBSERVATIONS)}")
+    if on_windows(task.inputs):
+        code, output = await _ps(WIN_OBSERVATIONS[what], timeout=120 if what == "packages" else 45)
+        if code == 127:
+            return refuse(task, output)
+        if code != 0:
+            return fail(task, f"Windows could not report {what} (exit {code}): {output[-300:]}")
+        return _observed(task, what, output, "windows")
     argv = OBSERVATIONS[what]
     if shutil.which(argv[0]) is None:
         return refuse(task, f"{argv[0]} is not available on this machine")
@@ -129,12 +145,15 @@ async def os_observe(task: Task, cfg: dict) -> TaskResult:
         *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
     )
     raw, _ = await proc.communicate()
-    output = raw.decode(errors="replace").strip()
+    return _observed(task, what, raw.decode(errors="replace").strip(), "linux")
+
+
+def _observed(task: Task, what: str, output: str, side: str) -> TaskResult:
     lines = output.splitlines()
     return ok(
         task,
         summary="\n".join(lines[:25]) or "(no output)",
-        data={"what": what, "lines": len(lines), "truncated": len(lines) > 25},
+        data={"what": what, "lines": len(lines), "truncated": len(lines) > 25, "on": side},
     )
 
 
@@ -307,6 +326,246 @@ def describe_action(action: str, args: dict) -> str:
     return f"{action} {args}"
 
 
+# ---------------------------------------------------------------------------
+# Windows: the same catalog, through PowerShell and winget
+# ---------------------------------------------------------------------------
+
+def on_windows(inputs: dict) -> bool:
+    """Native Windows always; WSL unless the task asks for the Linux VM."""
+    if platform.system() == "Windows":
+        return True
+    if not (wsl.is_wsl() and shutil.which("powershell.exe")):
+        return False
+    args = inputs.get("args") if isinstance(inputs.get("args"), dict) else {}
+    on = str(inputs.get("on") or args.get("on") or "").strip().lower()
+    return on not in {"linux", "wsl", "ubuntu"}
+
+
+_UTF8 = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; $ProgressPreference = 'SilentlyContinue'; "
+_NO_WINGET = (
+    "if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { "
+    "[Console]::Out.Write('winget is not installed; get \"App Installer\" from the Microsoft Store'); "
+    "exit 127 }; "
+)
+
+
+async def _ps(script: str, timeout: float = 45) -> tuple[int, str]:
+    code, out = await wsl.powershell(_UTF8 + script, timeout=timeout)
+    return code, _clean(out)
+
+
+def _clean(text: str) -> str:
+    """winget draws spinners and progress bars with carriage returns; keep
+    what each line finally said and drop the animation frames."""
+    lines = []
+    for line in text.replace("\r\n", "\n").split("\n"):
+        line = line.split("\r")[-1].rstrip()
+        bare = line.strip()
+        if not bare or bare in {"-", "\\", "|", "/"}:
+            continue
+        if set(bare) <= set("█▒░ ") or "KB /" in bare or "MB /" in bare:
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+# Read-only, like their Linux counterparts. Same names so the planner and
+# the owner never need to know which house they are asking about.
+WIN_OBSERVATIONS: dict[str, str] = {
+    "disk": (
+        "Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { "
+        "'{0}  {1:N0} GB, {2:N0} GB used, {3:N0} GB free ({4:N0}% used)' -f "
+        "$_.DeviceID, ($_.Size/1GB), (($_.Size-$_.FreeSpace)/1GB), ($_.FreeSpace/1GB), "
+        "(100*($_.Size-$_.FreeSpace)/[math]::Max($_.Size,1)) }"
+    ),
+    "memory": (
+        "$o = Get-CimInstance Win32_OperatingSystem; $t = $o.TotalVisibleMemorySize/1MB; "
+        "$f = $o.FreePhysicalMemory/1MB; "
+        "'RAM  {0:N1} GB, {1:N1} GB used, {2:N1} GB free' -f $t, ($t-$f), $f; "
+        "Get-CimInstance Win32_PageFileUsage | ForEach-Object { "
+        "'Page file {0}  {1} MB of {2} MB used' -f $_.Name, $_.CurrentUsage, $_.AllocatedBaseSize }"
+    ),
+    "cpu": (
+        "$o = Get-CimInstance Win32_OperatingSystem; $up = (Get-Date) - $o.LastBootUpTime; "
+        "Get-CimInstance Win32_Processor | ForEach-Object { "
+        "'{0}: {1}% load, {2} cores / {3} threads' -f $_.Name.Trim(), $_.LoadPercentage, "
+        "$_.NumberOfCores, $_.NumberOfLogicalProcessors }; "
+        "'up {0}d {1}h {2}m' -f $up.Days, $up.Hours, $up.Minutes"
+    ),
+    "services": (
+        "$s = @(Get-Service | Where-Object Status -eq 'Running' | Sort-Object DisplayName); "
+        "'{0} services running' -f $s.Count; "
+        "$s | ForEach-Object { '{0}  ({1})' -f $_.DisplayName, $_.Name }"
+    ),
+    "failed": (
+        "$s = @(Get-CimInstance Win32_Service -Filter \"StartMode='Auto' AND State<>'Running'\" | "
+        "Where-Object { $_.ExitCode -ne 0 }); "
+        "if ($s.Count -eq 0) { 'no failed services' } else { $s | ForEach-Object { "
+        "'{0}  ({1}) stopped, exit code {2}' -f $_.DisplayName, $_.Name, $_.ExitCode } }"
+    ),
+    "packages": (
+        _NO_WINGET
+        + "winget upgrade --accept-source-agreements --disable-interactivity | Out-String -Width 200"
+    ),
+    "network": (
+        "Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -ne '127.0.0.1' } | "
+        "ForEach-Object { '{0}  {1}/{2}' -f $_.InterfaceAlias, $_.IPAddress, $_.PrefixLength }"
+    ),
+    "kernel": (
+        "$o = Get-CimInstance Win32_OperatingSystem; "
+        "'{0} {1} (build {2}), {3}' -f $o.Caption, $o.Version, $o.BuildNumber, $o.OSArchitecture"
+    ),
+    "logs": (
+        "Get-WinEvent -FilterHashtable @{LogName='System','Application'; Level=1,2,3} "
+        "-MaxEvents 30 -ErrorAction SilentlyContinue | ForEach-Object { "
+        "'{0:MM-dd HH:mm} {1}  {2}: {3}' -f $_.TimeCreated, $_.LevelDisplayName, "
+        "$_.ProviderName, ((\"$($_.Message)\" -split \"`n\")[0]).Trim() }"
+    ),
+}
+
+# What the owner says -> the winget id it means. Anything else goes to
+# winget as typed (its own ids and monikers, e.g. "vscode", work too).
+WINGET_IDS = {
+    "vscode": "Microsoft.VisualStudioCode", "vs code": "Microsoft.VisualStudioCode",
+    "visual studio code": "Microsoft.VisualStudioCode", "code": "Microsoft.VisualStudioCode",
+    "chrome": "Google.Chrome", "google chrome": "Google.Chrome",
+    "firefox": "Mozilla.Firefox", "git": "Git.Git", "7zip": "7zip.7zip", "7-zip": "7zip.7zip",
+    "vlc": "VideoLAN.VLC", "discord": "Discord.Discord", "spotify": "Spotify.Spotify",
+    "steam": "Valve.Steam", "obs": "OBSProject.OBSStudio", "obs studio": "OBSProject.OBSStudio",
+    "node": "OpenJS.NodeJS.LTS", "nodejs": "OpenJS.NodeJS.LTS", "node.js": "OpenJS.NodeJS.LTS",
+    "notepad++": "Notepad++.Notepad++", "zoom": "Zoom.Zoom", "slack": "SlackTechnologies.Slack",
+    "powertoys": "Microsoft.PowerToys", "windows terminal": "Microsoft.WindowsTerminal",
+    "blender": "BlenderFoundation.Blender", "gimp": "GIMP.GIMP", "audacity": "Audacity.Audacity",
+}
+
+# The ground Alfred stands on, on Windows: WSL (his brain lives there),
+# PowerShell (his only way in), winget itself, his model and his runtime.
+PROTECTED_WIN_PACKAGES = ("wsl", "ubuntu", "powershell", "appinstaller", "winget",
+                          "ollama", "python")
+PROTECTED_WIN_SERVICES = {
+    "wslservice", "lxssmanager", "vmcompute", "hns", "sshd", "rpcss", "dcomlaunch",
+    "rpceptmapper", "winmgmt", "eventlog", "dhcp", "dnscache", "nlasvc", "netprofm",
+    "mpssvc", "bfe", "windefend", "termservice", "lanmanworkstation", "plugplay",
+    "power", "profsvc", "samss", "lsm", "schedule", "wuauserv", "trustedinstaller",
+}
+
+
+def winget_id(package: str) -> str:
+    return WINGET_IDS.get(package.strip().lower(), package.strip())
+
+
+def _deny_reason_windows(action: str, args: dict) -> str | None:
+    if action == "service_ctl":
+        name = str(args.get("name", "")).strip().lower()
+        if name in PROTECTED_WIN_SERVICES and args.get("verb") in {"stop", "disable"}:
+            return f"{args.get('name')} is protected; the owner must never be locked out"
+    if action == "pkg_remove":
+        pkg = winget_id(str(args.get("package", ""))).lower()
+        hit = next((p for p in PROTECTED_WIN_PACKAGES if p in pkg), None)
+        if hit:
+            return f"removing {args.get('package')} would cut Alfred off from this machine"
+    if action == "setting_set":
+        return "desktop settings are GNOME-only; on Windows ask Alfred's hands instead"
+    return None
+
+
+async def _winget(verb: str, target: list[str], timeout: int = 900) -> tuple[int, str]:
+    quoted = " ".join(wsl_quote(t) for t in target)
+    code, out = await _ps(
+        _NO_WINGET
+        + f"winget {verb} {quoted} --silent --accept-source-agreements "
+        "--disable-interactivity"
+        + (" --accept-package-agreements" if verb in {"install", "upgrade"} else "")
+        + " | Out-String -Width 200; exit $LASTEXITCODE",
+        timeout=timeout,
+    )
+    return code, out
+
+
+def wsl_quote(s: str) -> str:
+    return "'" + str(s).replace("'", "''") + "'"
+
+
+def _win_pkg_target(package: str) -> list[str]:
+    pkg = winget_id(package)
+    if not pkg:
+        raise KeyError("package")
+    # Dotted names are winget ids; match them exactly so "Git.Git" never
+    # turns into some other package that merely mentions git.
+    return ["--id", pkg, "--exact"] if "." in pkg and " " not in pkg else [pkg]
+
+
+async def _win_pkg_install(args: dict) -> tuple[int, str]:
+    return await _winget("install", _win_pkg_target(str(args["package"])))
+
+async def _win_pkg_remove(args: dict) -> tuple[int, str]:
+    return await _winget("uninstall", _win_pkg_target(str(args["package"])))
+
+async def _win_pkg_upgrade(args: dict) -> tuple[int, str]:
+    if args.get("package"):
+        return await _winget("upgrade", _win_pkg_target(str(args["package"])))
+    return await _winget("upgrade", ["--all"], timeout=3600)
+
+
+_SERVICE_VERBS = {
+    "start": "Start-Service -InputObject $s -ErrorAction Stop",
+    "stop": "Stop-Service -InputObject $s -Force -ErrorAction Stop",
+    "restart": "Restart-Service -InputObject $s -Force -ErrorAction Stop",
+    "enable": "Set-Service -Name $s.Name -StartupType Automatic -ErrorAction Stop",
+    "disable": "Set-Service -Name $s.Name -StartupType Disabled -ErrorAction Stop",
+}
+
+
+async def _win_service_ctl(args: dict) -> tuple[int, str]:
+    """Services need an administrator: one UAC prompt per approved change,
+    like the bus door. The name is resolved (service or display name) and
+    re-checked against the protected list on the Windows side, so a display
+    name cannot smuggle a protected service past the check above."""
+    verb = str(args["verb"])
+    if verb not in _SERVICE_VERBS:
+        return 1, f"verb {verb!r} not in catalog"
+    name = wsl_quote(str(args["name"]))
+    protected = ",".join(wsl_quote(n) for n in sorted(PROTECTED_WIN_SERVICES))
+    find = (
+        f"$s = Get-Service -Name {name} -ErrorAction SilentlyContinue; "
+        f"if (-not $s) {{ $s = Get-Service -DisplayName {name} -ErrorAction SilentlyContinue }}; "
+        f"if (-not $s) {{ [Console]::Out.Write('no Windows service called ' + {name}); exit 2 }}; "
+        "$s = @($s)[0]; "
+    )
+    if verb in {"stop", "disable"}:
+        find += (f"if (@({protected}) -contains $s.Name.ToLower()) {{ "
+                 "[Console]::Out.Write($s.Name + ' is protected'); exit 3 }; ")
+    log_name = f"alfred-{uuid.uuid4().hex}.txt"
+    inner = (
+        "$ErrorActionPreference = 'Stop'; "
+        f"$log = Join-Path $env:TEMP '{log_name}'; "
+        f"try {{ {find}{_SERVICE_VERBS[verb]}; "
+        "$s = Get-Service -Name $s.Name; "
+        "Set-Content -Path $log -Value ('{0} ({1}): {2}, starts {3}' -f "
+        "$s.DisplayName, $s.Name, $s.Status, $s.StartType); exit 0 } "
+        "catch { Set-Content -Path $log -Value ($_ | Out-String); exit 1 }"
+    )
+    outer = (
+        find
+        + "$p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden "
+        f"-ArgumentList '-NoProfile','-EncodedCommand','{wsl.encode(inner)}'; "
+        f"$log = Join-Path $env:TEMP '{log_name}'; "
+        "if (Test-Path $log) { Get-Content $log -Raw; Remove-Item $log }; exit $p.ExitCode"
+    )
+    code, out = await _ps(outer, timeout=180)
+    if code != 0 and ("canceled" in out.lower() or "cancelled" in out.lower()):
+        return code, "Windows asked for administrator permission and it was declined"
+    return code, out
+
+
+WIN_ACTIONS = {
+    "pkg_install": _win_pkg_install,
+    "pkg_remove": _win_pkg_remove,
+    "pkg_upgrade": _win_pkg_upgrade,
+    "service_ctl": _win_service_ctl,
+}
+
+
 @handler("os.apply")
 async def os_apply(task: Task, cfg: dict) -> TaskResult:
     action = str(task.inputs.get("action", ""))
@@ -326,11 +585,12 @@ async def os_apply(task: Task, cfg: dict) -> TaskResult:
     if not task.idempotency_key:
         return fail(task, "refusing an OS change without an idempotency_key")
 
-    reason = _deny_reason(action, args)
+    windows = on_windows(task.inputs) and action in (*WIN_ACTIONS, "setting_set")
+    reason = _deny_reason_windows(action, args) if windows else _deny_reason(action, args)
     if reason is not None:
         return refuse(task, f"denied: {reason}")
 
-    fn, _ = ACTIONS[action]
+    fn = WIN_ACTIONS[action] if windows else ACTIONS[action][0]
     try:
         code, output = await fn(args)
     except KeyError as exc:
@@ -341,7 +601,9 @@ async def os_apply(task: Task, cfg: dict) -> TaskResult:
     tail = "\n".join(output.splitlines()[-6:])
     if code != 0:
         hint = ""
-        if "sudo" in output and ("password" in output.lower() or "sudo:" in output):
+        if windows and code == 127:
+            return refuse(task, output)
+        if not windows and "sudo" in output and ("password" in output.lower() or "sudo:" in output):
             hint = (" — the worker lacks scoped sudo; run "
                     "./deploy/install-alfredos.sh sudo on this machine")
         return fail(task, f"{describe_action(action, args)} failed (exit {code}): {tail}{hint}")
@@ -349,5 +611,5 @@ async def os_apply(task: Task, cfg: dict) -> TaskResult:
     return ok(
         task,
         summary=f"{describe_action(action, args)} — done. {tail}",
-        data={"action": action, "exit_code": code},
+        data={"action": action, "exit_code": code, "on": "windows" if windows else "linux"},
     )
