@@ -12,12 +12,11 @@ need, and respecting the VRAM ceiling.
    default; "-1" pins it forever) so his voice never goes cold between
    messages. Configured in desktop.toml.
 
-2. **Plain conversation skips the planner.** A turn used to cost up to three
-   model calls: plan, reply, then learn. A message that plainly asks for no
-   work ("good evening", "what did we decide?") now skips the planner
-   entirely and answers in ONE call. The gate errs toward planning — a false
-   "needs work" wastes one call; a false "no" would drop a real task — so
-   anything ambiguous still plans. Roughly halves latency for chat.
+2. **Simple greetings and acknowledgments skip the planner.** "Good evening"
+   or "thanks" need only a reply. Other messages go to the planner when
+   capabilities are available, even if no work verb is present. It gets a
+   short excerpt of the current conversation so "do the second one" can
+   refer to a previous turn.
 
 3. **Learning moved to the background.** Noticing durable facts about you no
    longer blocks the reply. You get the answer; Alfred files what he learned
