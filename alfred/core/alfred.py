@@ -197,6 +197,18 @@ class Alfred:
                 if all(dep in results for dep in t.depends_on)
             ]
             for task in ready[:]:
+                waiting = [d for d in task.depends_on
+                           if results[d].status == "pending"]
+                if waiting:
+                    results[task.id] = TaskResult(
+                        task_id=task.id, worker_id="owner-approval",
+                        status="pending",
+                        summary="waiting: depends on a change awaiting your approval",
+                        error="",
+                    )
+                    remaining.pop(task.id)
+                    ready.remove(task)
+                    continue
                 blocked = [d for d in task.depends_on
                            if results[d].status == "rejected" and results[d].worker_id == "none"]
                 if blocked:
@@ -723,12 +735,14 @@ class Alfred:
                 pending = re.search(r"pending change #(\d+)", result.summary)
                 if pending:
                     change = pending.group(1)
-                else:
+                elif task.capability in GATED:
                     actions = [
                         action for action in self.state.pending_actions()
                         if action["project_id"] == pid
                     ]
                     change = str(actions[-1]["id"]) if actions else "unknown"
+                else:
+                    continue
                 self.state.log_step(
                     pid, "note",
                     f"awaiting approval: {step_body} (pending change #{change})",

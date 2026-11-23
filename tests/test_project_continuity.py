@@ -459,6 +459,19 @@ class ProjectContinuityTests(unittest.IsolatedAsyncioTestCase):
         pending = TaskResult(task_id=gated.id, worker_id="owner-approval",
                              status="pending")
         self.assertEqual(planner.outcome(gated, pending), "awaiting approval")
+        waiting_task = Task(capability="code.test", prompt="test")
+        waiting = TaskResult(
+            task_id=waiting_task.id, worker_id="owner-approval",
+            status="pending",
+            summary="waiting: depends on a change awaiting your approval",
+            error="",
+        )
+        self.assertEqual(planner.outcome(waiting_task, waiting),
+                         "awaiting approval")
+        passed, note = planner.verify(waiting_task, waiting)
+        self.assertTrue(passed)
+        self.assertEqual(
+            note, "NOT DONE: waiting on a change awaiting the owner's approval")
 
         test_task = Task(capability="code.test", prompt="test")
         passed = TaskResult(task_id=test_task.id, worker_id="test",

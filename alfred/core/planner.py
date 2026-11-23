@@ -259,9 +259,11 @@ def verify(task: Task, result: TaskResult) -> tuple[bool, str]:
     exists, use the real check. Where none exists, say so plainly and let
     Alfred read the artifact himself.
     """
-    if result.status == "pending" and task.capability in ("os.apply", "ui.act"):
-        return True, ("NOT DONE: parked as a pending change; nothing happens until "
-                      "the owner approves it")
+    if result.status == "pending":
+        if task.capability in ("os.apply", "ui.act"):
+            return True, ("NOT DONE: parked as a pending change; nothing happens until "
+                          "the owner approves it")
+        return True, "NOT DONE: waiting on a change awaiting the owner's approval"
 
     if not result.ok:
         return False, result.error or "worker reported failure"
@@ -335,7 +337,7 @@ def verify(task: Task, result: TaskResult) -> tuple[bool, str]:
 
 
 def outcome(task: Task, result: TaskResult) -> str:
-    if result.status == "pending" and task.capability in {"os.apply", "ui.act"}:
+    if result.status == "pending":
         return "awaiting approval"
     passed, note = verify(task, result)
     if not passed:
