@@ -743,7 +743,11 @@ class Alfred:
                         f"pending_step:{change}",
                         json.dumps({
                             "step": next_steps[0]["id"],
-                            "only": len(tasks) == 1 and task.capability in GATED,
+                            "only": task.capability in GATED and all(
+                                other_label in {"verified", "done, unverified"}
+                                for other_task, _, other_label in records
+                                if other_task.id != task.id
+                            ),
                         }),
                     )
         outcomes = ", ".join(

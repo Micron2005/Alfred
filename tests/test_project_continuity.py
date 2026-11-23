@@ -572,6 +572,68 @@ class ProjectContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("the rest of this step still needs to run", note["body"])
         self.assertEqual(core.state.setting(setting_key), "")
 
+    async def test_approved_project_step_closes_when_other_task_finished(self):
+        core = self.make_core()
+        pid = core.state.create_project(
+            "Independent Approval", "Make a protected change and test it",
+            root=str(self.project_root))
+        step_id = core.state.log_step(
+            pid, "next", "Edit a protected file and run its tests")
+        change = Task(
+            capability="os.apply",
+            prompt="Write the requested file",
+            project_id=pid,
+            inputs={"action": "file_write", "args": {
+                "path": str(self.project_root / "protected.txt"),
+                "content": "approved only",
+            }},
+        )
+        test = Task(
+            capability="code.test",
+            prompt="Run the project tests",
+            project_id=pid,
+            inputs={"workdir": str(self.project_root),
+                    "command": "python -m unittest -q"},
+        )
+        test_result = TaskResult(
+            task_id=test.id, worker_id="test", summary="test suite passed",
+            data={"exit_code": 0})
+
+        with (
+            patch.object(core, "_network_capabilities", new_callable=AsyncMock,
+                         return_value=["os.apply", "code.test"]),
+            patch.object(core, "_offline_hands", new_callable=AsyncMock,
+                         return_value={}),
+            patch.object(planner, "plan", new_callable=AsyncMock,
+                         return_value=[change, test]),
+            patch.object(core, "_dispatch_now", new_callable=AsyncMock,
+                         return_value=test_result) as dispatch,
+            patch.object(core, "_speak", new_callable=AsyncMock,
+                         return_value="Waiting for approval."),
+        ):
+            await core.converse("continue working on Independent Approval")
+
+        dispatch.assert_awaited_once()
+        action = core.state.pending_actions()[0]
+        setting_key = f"pending_step:{action['id']}"
+        self.assertEqual(
+            json.loads(core.state.setting(setting_key)),
+            {"step": step_id, "only": True},
+        )
+        result = TaskResult(
+            task_id=change.id, worker_id="test", summary="file written")
+
+        with patch.object(core, "_dispatch_now", new_callable=AsyncMock,
+                          return_value=result):
+            await core.approve_action(action["id"])
+
+        step = next(item for item in core.state.steps(
+            pid, "next", open_only=False) if item["id"] == step_id)
+        self.assertEqual(step["status"], "closed")
+        done = core.state.steps(pid, "done", open_only=False)[0]
+        self.assertIn("approved, done, unverified", done["body"])
+        self.assertEqual(core.state.setting(setting_key), "")
+
     async def test_dependent_task_waits_for_project_approval(self):
         core = self.make_core()
         pid = core.state.create_project(
