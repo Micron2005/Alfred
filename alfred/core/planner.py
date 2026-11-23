@@ -16,6 +16,13 @@ from alfred.worker.handlers.marketing import list_briefs
 
 log = logging.getLogger("alfred.planner")
 
+PROPOSED = "proposed"
+RUNNING = "running"
+_UNVERIFIED_MARKERS = (
+    "not yet tested", "unverified", "no mechanical check", "partial",
+    "unconfirmed", "NOT DONE",
+)
+
 PLANNER_SYSTEM = (
     "You decompose engineering and business requests into delegatable tasks. Return JSON "
     "only, no prose, no markdown fences. Be sparing: fewer, larger tasks beat "
@@ -68,7 +75,8 @@ INPUT_HINTS = {
         "inputs: {\"command\": str, \"stdin\": str (optional, fed to the program), "
         "\"workdir\": str (optional; when it depends_on a code.write it runs where "
         "that file was written, so name the file in the command, e.g. "
-        "\"python3 calc.py 120 95\")}"
+        "\"python3 calc.py 120 95\"); when the project has a Root, use it as "
+        "workdir unless the step names another}"
     ),
     "docs.write": (
         "inputs: {\"filename\": str, \"sections\": [{\"heading\": str, \"body\": str}]}"
@@ -324,3 +332,14 @@ def verify(task: Task, result: TaskResult) -> tuple[bool, str]:
         return True, "device acknowledged"
 
     return True, "no mechanical check available for this capability"
+
+
+def outcome(task: Task, result: TaskResult) -> str:
+    if result.status == "pending" and task.capability in {"os.apply", "ui.act"}:
+        return "awaiting approval"
+    passed, note = verify(task, result)
+    if not passed:
+        return "failed"
+    if any(marker in note for marker in _UNVERIFIED_MARKERS):
+        return "done, unverified"
+    return "verified"

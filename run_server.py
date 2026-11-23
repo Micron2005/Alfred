@@ -122,7 +122,11 @@ class Bridge:
                 )
 
         future = asyncio.run_coroutine_threadsafe(_serialized(), self.loop)
-        return future.result(timeout=CHAT_TIMEOUT_S)
+        reply = future.result(timeout=CHAT_TIMEOUT_S)
+        if (self.alfred.active_project
+                and self.alfred.active_project != self.default_project):
+            self.default_project = self.alfred.active_project
+        return reply
 
     def speech_available(self) -> set[str]:
         async def _caps() -> set[str]:
@@ -606,15 +610,22 @@ async def main() -> None:
     bridge.join_url = join_url
     if args.project:
         bridge.default_project = args.project
+        alfred.active_project = args.project
+        alfred.state.set_setting("current_project", args.project)
     else:
-        # The shell needs somewhere to file conversation; latest active
-        # project, or a home project created on first boot.
-        active = alfred.state.active_projects()
-        bridge.default_project = (
-            active[0]["id"] if active else alfred.state.create_project(
-                "Household", "General running of the house"
+        current_project = alfred.state.setting("current_project")
+        current = alfred.state.project(current_project) if current_project else None
+        if current and current["status"] == "active":
+            bridge.default_project = current_project
+        else:
+            # The shell needs somewhere to file conversation; latest active
+            # project, or a home project created on first boot.
+            active = alfred.state.active_projects()
+            bridge.default_project = (
+                active[0]["id"] if active else alfred.state.create_project(
+                    "Household", "General running of the house"
+                )
             )
-        )
 
     background = [asyncio.create_task(alfred.supervise()),
                   asyncio.create_task(alfred.sight.run())]
