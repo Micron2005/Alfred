@@ -259,9 +259,11 @@ class State:
             "ORDER BY id DESC LIMIT ?", (project_id, limit)).fetchall()
         return [(r["role"], r["body"]) for r in reversed(rows)]
 
-    def recent_turns_at(self, limit: int = 40) -> list[tuple[str, str, float]]:
+    def recent_turns_at(self, project_id: str | None,
+                        limit: int = 40) -> list[tuple[str, str, float]]:
         rows = self.db.execute(
-            "SELECT role, body, at FROM conversation ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            "SELECT role, body, at FROM conversation WHERE project_id IS ? "
+            "ORDER BY id DESC LIMIT ?", (project_id, limit)).fetchall()
         return [(r["role"], r["body"], r["at"]) for r in reversed(rows)]
 
     # ---- pending actions (owner approval gate for os.apply) --------------
