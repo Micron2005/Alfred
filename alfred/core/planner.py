@@ -125,6 +125,7 @@ async def plan(
     available: list[str] | None = None,
     *,
     recent_conversation: str = "",
+    strict: bool = False,
 ) -> list[Task]:
     """Ask for a plan, then assume the answer is wrong until it validates.
 
@@ -179,6 +180,9 @@ async def plan(
             )
             log.warning("plan attempt %d rejected: %s", attempt + 1, rejected)
             continue
+        if rejected and strict:
+            log.error("strict plan rejected after 3 attempts: %s", rejected)
+            return []
         return tasks
 
     log.error("planner failed 3 times; handling this turn without delegation")

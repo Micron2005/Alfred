@@ -687,13 +687,14 @@ class Alfred:
             return reply, pid
 
         step_body = next_steps[0]["body"]
-        request = f"Next step for this project: {step_body}"
+        planner_request = f"Next step for this project: {step_body}"
         available = await self._network_capabilities()
         offline = await self._offline_hands(available)
         tasks = await planner.plan(
-            request, briefing, self.cfg, pid,
+            planner_request, briefing, self.cfg, pid,
             available=sorted(set(available) | set(offline)),
             recent_conversation=recent,
+            strict=True,
         )
         if not tasks:
             self.state.log_step(pid, "note", f"could not plan step: {step_body}")
