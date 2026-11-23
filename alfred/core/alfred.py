@@ -72,9 +72,6 @@ class Alfred:
         self.persona = PERSONA_PATH.read_text() if PERSONA_PATH.exists() else ""
         self.local_worker_id: str = cfg["worker"]["id"]
         self.local_node_id: str = local_node_id()
-        # Conversation survives restarts: the last turns reload so a
-        # service restart or self-update does not wipe the thread.
-        self.history: list[tuple[str, str]] = list(self.state.recent_turns(6))
         self._bg_tasks: set = set()   # background learners, kept referenced
         self._online_nodes: set[str] = set()   # heartbeating machines, last tick
         self._offline_nodes: set[str] = set()  # assigned machines absent, last tick
@@ -309,41 +306,27 @@ class Alfred:
         return ("What you know about your employer (learned over time; use "
                 "it naturally, do not recite it):\n" + "\n".join(lines))
 
-    # Verbs and nouns that signal real work worth planning for. The gate
-    # errs toward planning: a false 'yes' costs one wasted planner call, a
-    # false 'no' would drop a real task — so the bar to skip is high.
-    _WORK_HINTS = (
-        "calculate", "compute", "design", "model", "cad", "measure",
-        "write code", "script", "program", "build", "generate",
-        "research", "look up", "search", "find out", "analyze", "analyse",
-        "install", "update", "upgrade", "restart", "service", "package",
-        "observe", "check the", "disk", "memory", "read the", "document",
-        "torque", "stress", "load", "bracket", "gear", "motor", "simulate",
-        "market", "promote", "seo", "audit", "campaign", "launch", "pitch",
-        "tagline", "landing page", "ad copy", "outreach", "email", "draft",
-        "write me", "write a", "write two", "write three", "post", "tweet",
-        "headline", "newsletter", "blog", "facebook", "linkedin", "reddit",
-        "customers", "sell", "competitor",
-        "create", "make a", "make me", "file", "save", "write", "delete",
-        "remove", "set up", "setup", "configure", "run ", "test", "fix",
-        "add ", "check", "show me", "list", "how much", "how many", "what is",
-        "open", "look at", "summar", "compare", "price", "pricing",
-        "click", "type ", "press ", "close", "window", "mouse", "keyboard",
-        "scroll", "switch to", "bring up", "launch",
-    )
+    _CHAT_ONLY = frozenset({
+        "", "hi", "hello", "hey", "good morning", "good afternoon",
+        "good evening", "good night", "how are you", "thanks", "thank you",
+        "okay", "ok", "got it",
+    })
 
     def _might_need_work(self, message: str) -> bool:
-        m = message.lower().strip()
-        if len(m) < 4:
-            return False
-        return any(h in m for h in self._WORK_HINTS)
+        return message.casefold().strip().rstrip(".!?") not in self._CHAT_ONLY
+
+    def _recent_conversation(self, project_id: str | None) -> str:
+        return "\n".join(
+            f"{role}: {text if len(text) <= 400 else text[:250] + ' … ' + text[-147:]}"
+            for role, text in self.state.recent_turns(project_id, limit=6)
+        )
 
     async def converse(self, message: str, project_id: str | None = None,
                        attachments: list[str] | None = None) -> str:
         self._asked_at = time.time()
         switched = self.sight.command(message) or self.hands.command(message)
         if switched:
-            self._remember(message, switched, [])
+            self._remember(message, switched, [], project_id)
             return switched
         self._talking = True
         try:
@@ -353,6 +336,7 @@ class Alfred:
 
     async def _converse(self, message: str, project_id: str | None,
                         attachments: list[str] | None) -> str:
+        recent = self._recent_conversation(project_id)
         briefing = self.state.briefing(project_id) if project_id else ""
         for part in (self._owner_briefing(), self.sight.briefing(), self.hands.briefing()):
             if part:
@@ -368,32 +352,31 @@ class Alfred:
                 + "\n".join(f"  - {n['body']}" for n in pending)
             )
 
-        available = await self._network_capabilities()
         offline: dict[str, str] = {}
         if attachments:
+            available = await self._network_capabilities()
             tasks = self._attachment_tasks(attachments, message, available=set(available))
         elif self._asks_about_own_screen(message):
             # A fresh look beats a twenty-second-old glance, and the owner's
             # own screen never goes through the planner or a worker.
-            reply = await self._speak(message, briefing, [await self._fresh_look(message)])
-            self._remember(message, reply, pending)
+            reply = await self._speak(message, briefing, recent, [await self._fresh_look(message)])
+            self._remember(message, reply, pending, project_id)
             return reply
         elif self._might_need_work(message):
-            # Only consult the planner when the message plausibly asks for
-            # something a worker does. Plain conversation skips it entirely
-            # and answers in one LLM call instead of two.
+            available = await self._network_capabilities()
             offline = await self._offline_hands(available)
             tasks = await planner.plan(
                 message, briefing, self.cfg, project_id,
                 available=sorted(set(available) | set(offline)),
+                recent_conversation=recent,
             )
         else:
             tasks = []
 
         if not tasks:
             # Nothing worth delegating. Answer directly.
-            reply = await self._speak(message, briefing, [])
-            self._remember(message, reply, pending)
+            reply = await self._speak(message, briefing, recent, [])
+            self._remember(message, reply, pending, project_id)
             self._learn_in_background(message)
             return reply
 
@@ -419,9 +402,9 @@ class Alfred:
                 "which, and why, in plain words:\n  - " + "\n  - ".join(failed)
             ))
 
-        reply = await self._speak(message, briefing, checked)
+        reply = await self._speak(message, briefing, recent, checked)
         reply = self._attach_deliverables(reply, tasks, results, self.local_worker_id)
-        self._remember(message, reply, pending)
+        self._remember(message, reply, pending, project_id)
         self._learn_in_background(message)
         return reply
 
@@ -474,13 +457,13 @@ class Alfred:
             extra.append("Files:\n" + "\n".join(f"  {p}" for p in files))
         return reply if not extra else reply.rstrip() + "\n\n" + "\n\n".join(extra)
 
-    async def _speak(self, message: str, briefing: str, findings: list[str]) -> str:
+    async def _speak(self, message: str, briefing: str, recent: str,
+                     findings: list[str]) -> str:
         """The only place in the entire system that produces user-facing text.
 
         Workers return artifacts. Alfred does all the narrating. That is the
         whole of what "there is only one Alfred" means in code.
         """
-        recent = "\n".join(f"{who}: {what}" for who, what in self.history[-6:])
         if findings:
             body = "\n\n".join(findings)
             prompt = (
@@ -504,17 +487,16 @@ class Alfred:
                 "never mention tasks, workers or requests. Nothing was done, made "
                 "or looked up for this message — if the user asked for that, say "
                 "so plainly and say what you would need, or that it is beyond you; "
-                "never imply it happened. Earlier topics were already dealt with; "
-                "do not bring them back up unless asked."
+                "never imply it happened. Use earlier turns to resolve references. "
+                "If the intended action or item is unclear, ask one specific question "
+                "rather than guessing."
             )
         return await llm.complete(prompt, self.cfg, system=self.persona, timeout=600)
 
-    def _remember(self, message: str, reply: str, delivered: list[dict]) -> None:
-        self.history.append(("User", message))
-        self.history.append(("Alfred", reply))
-        self.history = self.history[-12:]
-        self.state.log_turn("User", message, at=self._asked_at)
-        self.state.log_turn("Alfred", reply)
+    def _remember(self, message: str, reply: str, delivered: list[dict],
+                  project_id: str | None) -> None:
+        self.state.log_turn("User", message, project_id, at=self._asked_at)
+        self.state.log_turn("Alfred", reply, project_id)
         self.state.mark_delivered([n["id"] for n in delivered])
 
     def _learn_in_background(self, message: str) -> None:

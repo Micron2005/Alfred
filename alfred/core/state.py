@@ -253,9 +253,10 @@ class State:
         self._write("INSERT INTO conversation (project_id,role,body,at) VALUES (?,?,?,?)",
                     (project_id, role, body[:4000], at or time.time()))
 
-    def recent_turns(self, limit: int = 6) -> list[tuple[str, str]]:
+    def recent_turns(self, project_id: str | None, limit: int = 6) -> list[tuple[str, str]]:
         rows = self.db.execute(
-            "SELECT role, body FROM conversation ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            "SELECT role, body FROM conversation WHERE project_id IS ? "
+            "ORDER BY id DESC LIMIT ?", (project_id, limit)).fetchall()
         return [(r["role"], r["body"]) for r in reversed(rows)]
 
     def recent_turns_at(self, limit: int = 40) -> list[tuple[str, str, float]]:
