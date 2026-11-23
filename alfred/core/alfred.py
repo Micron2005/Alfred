@@ -309,7 +309,7 @@ class Alfred:
     _CHAT_ONLY = frozenset({
         "", "hi", "hello", "hey", "good morning", "good afternoon",
         "good evening", "good night", "how are you", "thanks", "thank you",
-        "okay", "ok", "got it",
+        "got it",
     })
 
     def _might_need_work(self, message: str) -> bool:

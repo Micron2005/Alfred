@@ -169,11 +169,11 @@ class ConversationContextTests(unittest.IsolatedAsyncioTestCase):
         )
         speak.return_value = "Could you clarify?"
 
-        for message in ("yes", "do it", "shorter", "again"):
+        for message in ("yes", "ok", "okay", "do it", "shorter", "again"):
             await core.converse(message, project_id="A")
 
-        self.assertEqual(plan.await_count, 4)
-        self.assertEqual(network.await_count, 4)
+        self.assertEqual(plan.await_count, 6)
+        self.assertEqual(network.await_count, 6)
 
     async def test_follow_up_uses_prior_alternatives_in_real_planner_and_synthesis(self):
         core = self.make_core()
