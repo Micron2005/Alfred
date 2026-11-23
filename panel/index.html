@@ -248,6 +248,7 @@
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
   let status = null;
+  let lastDefaultProject = null;
   let busy = false;
 
   async function api(path, opts = {}) {
@@ -572,6 +573,10 @@ cd Alfred &amp;&amp; ./install.sh worker</pre>
       $("busline").className = status.bus.wsl && !status.bus.wsl.ok ? "v hot" : "v";
       const proj = status.projects.find((p) => p.id === status.default_project);
       $("project").textContent = proj ? proj.name : "—";
+      const projectChanged = lastDefaultProject !== null
+        && lastDefaultProject !== status.default_project;
+      lastDefaultProject = status.default_project;
+      if (projectChanged) await loadHistory();
     } catch (err) {
       if (err.message !== "locked") { $("busline").textContent = "offline"; $("busline").className = "v hot"; $("eyestext").textContent = "unknown"; }
     }

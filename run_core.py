@@ -185,6 +185,7 @@ async def main() -> None:
                 continue
             print()
             print(await alfred.converse(message, project_id))
+            project_id = alfred.active_project or project_id
             print()
     except (KeyboardInterrupt, EOFError):
         pass

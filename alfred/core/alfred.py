@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -69,6 +70,11 @@ class Alfred:
         self.bus = bus
         self.cfg = cfg
         self.state = State(cfg["core"]["state_db"])
+        current_project = self.state.setting("current_project")
+        current = self.state.project(current_project) if current_project else None
+        self.active_project: str | None = (
+            current_project if current and current["status"] == "active" else None
+        )
         self.persona = PERSONA_PATH.read_text() if PERSONA_PATH.exists() else ""
         self.local_worker_id: str = cfg["worker"]["id"]
         self.local_node_id: str = local_node_id()
@@ -190,7 +196,21 @@ class Alfred:
                 t for t in remaining.values()
                 if all(dep in results for dep in t.depends_on)
             ]
+            resolved = False
             for task in ready[:]:
+                waiting = [d for d in task.depends_on
+                           if results[d].status == "pending"]
+                if waiting:
+                    results[task.id] = TaskResult(
+                        task_id=task.id, worker_id="owner-approval",
+                        status="pending",
+                        summary="waiting: depends on a change awaiting your approval",
+                        error="",
+                    )
+                    remaining.pop(task.id)
+                    ready.remove(task)
+                    resolved = True
+                    continue
                 blocked = [d for d in task.depends_on
                            if results[d].status == "rejected" and results[d].worker_id == "none"]
                 if blocked:
@@ -200,9 +220,12 @@ class Alfred:
                     )
                     remaining.pop(task.id)
                     ready.remove(task)
+                    resolved = True
             if not ready and not remaining:
                 break
             if not ready:
+                if resolved:
+                    continue
                 for t in remaining.values():
                     results[t.id] = TaskResult(
                         task_id=t.id, worker_id="none", status="error",
@@ -321,6 +344,23 @@ class Alfred:
             for role, text in self.state.recent_turns(project_id, limit=6)
         )
 
+    def _conversation_briefing(self, project_id: str | None,
+                               base: str | None = None) -> tuple[str, list[dict]]:
+        briefing = base if base is not None else (
+            self.state.briefing(project_id) if project_id else "")
+        for part in (self._owner_briefing(), self.sight.briefing(), self.hands.briefing()):
+            if part:
+                briefing = (briefing + "\n\n" + part) if briefing else part
+        pending = self.state.undelivered()
+        if pending:
+            briefing += (
+                "\n\nHappened since your last reply (these are facts and supersede "
+                "anything said earlier in the conversation; mention briefly, and "
+                "only if relevant to what the user is saying):\n"
+                + "\n".join(f"  - {notice['body']}" for notice in pending)
+            )
+        return briefing, pending
+
     async def converse(self, message: str, project_id: str | None = None,
                        attachments: list[str] | None = None) -> str:
         self._asked_at = time.time()
@@ -330,6 +370,12 @@ class Alfred:
             return switched
         self._talking = True
         try:
+            pending = self.state.undelivered()
+            command = await self._project_command(message, project_id)
+            if command is not None:
+                reply, project_id_used = command
+                self._remember(message, reply, pending, project_id_used)
+                return reply
             return await self._converse(message, project_id, attachments)
         finally:
             self._talking = False
@@ -337,20 +383,7 @@ class Alfred:
     async def _converse(self, message: str, project_id: str | None,
                         attachments: list[str] | None) -> str:
         recent = self._recent_conversation(project_id)
-        briefing = self.state.briefing(project_id) if project_id else ""
-        for part in (self._owner_briefing(), self.sight.briefing(), self.hands.briefing()):
-            if part:
-                briefing = (briefing + "\n\n" + part) if briefing else part
-
-        # Anything the supervisor noticed while you were away.
-        pending = self.state.undelivered()
-        if pending:
-            briefing += (
-                "\n\nHappened since your last reply (these are facts and supersede "
-                "anything said earlier in the conversation; mention briefly, and "
-                "only if relevant to what the user is saying):\n"
-                + "\n".join(f"  - {n['body']}" for n in pending)
-            )
+        briefing, pending = self._conversation_briefing(project_id)
 
         offline: dict[str, str] = {}
         if attachments:
@@ -382,19 +415,30 @@ class Alfred:
 
         log.info("plan: %d tasks across %s", len(tasks),
                  ", ".join(sorted({t.capability for t in tasks})))
-        results = await self._run_graph(tasks, offline)
+        records, checked = await self._run_and_check(tasks, offline)
+        reply = await self._speak_and_attach(
+            message, tasks, records, checked, briefing, recent)
+        self._remember(message, reply, pending, project_id)
+        self._learn_in_background(message)
+        return reply
 
-        # Verify before synthesising, so the report reflects checked work.
+    async def _run_and_check(
+        self, tasks: list[Task], offline: dict[str, str],
+    ) -> tuple[list[tuple[Task, TaskResult, str]], list[str]]:
+        results = await self._run_graph(tasks, offline)
         checked: list[str] = []
         failed: list[str] = []
+        records: list[tuple[Task, TaskResult, str]] = []
         for task in tasks:
             result = results[task.id]
-            passed, note = planner.verify(task, result)
+            label = planner.outcome(task, result)
+            _, note = planner.verify(task, result)
+            records.append((task, result, label))
             checked.append(
-                f"[{task.capability}] {'OK' if passed else 'FAILED'} ({note})\n"
+                f"[{task.capability}] {label} ({note})\n"
                 f"{result.summary or result.error}"
             )
-            if not passed:
+            if label == "failed":
                 failed.append(f"{task.capability}: {note}")
         if failed:
             checked.insert(0, (
@@ -402,11 +446,322 @@ class Alfred:
                 "which, and why, in plain words:\n  - " + "\n  - ".join(failed)
             ))
 
+        return records, checked
+
+    async def _speak_and_attach(
+        self, message: str, tasks: list[Task],
+        records: list[tuple[Task, TaskResult, str]], checked: list[str],
+        briefing: str, recent: str,
+    ) -> str:
         reply = await self._speak(message, briefing, recent, checked)
+        results = {task.id: result for task, result, _ in records}
         reply = self._attach_deliverables(reply, tasks, results, self.local_worker_id)
-        self._remember(message, reply, pending, project_id)
-        self._learn_in_background(message)
         return reply
+
+    def _current_project_id(self, project_id: str | None) -> str | None:
+        for candidate in (project_id, self.active_project):
+            project = self.state.project(candidate) if candidate else None
+            if project and project["status"] == "active":
+                return candidate
+        return None
+
+    def _active_project_listing(self) -> str:
+        projects = self.state.active_projects()
+        if not projects:
+            return "There are no active projects yet."
+        return "Active projects: " + ", ".join(
+            f"{project['name']} ({project['id']})" for project in projects)
+
+    def _project_candidates(self, query: str) -> list[dict]:
+        folded = query.casefold()
+        return [
+            project for project in self.state.active_projects()
+            if folded in project["name"].casefold()
+        ]
+
+    async def _project_command(
+        self, message: str, project_id: str | None,
+    ) -> tuple[str, str | None] | None:
+        command = message.strip()
+        command = re.sub(r"^alfred(?:,\s*|\s+)", "", command, flags=re.IGNORECASE)
+        plain = command.strip().rstrip(".!?").strip()
+        current_pid = self._current_project_id(project_id)
+
+        resume = re.fullmatch(
+            r"(?:continue|resume|keep going|carry on|pick up)\s+"
+            r"(?:(?:working\s+on|on|with)\s+(?:project\s+)?|project\s+)(.+)",
+            plain, re.IGNORECASE)
+        if resume:
+            return await self._resume(resume.group(1).strip(), current_pid)
+        resume = re.fullmatch(
+            r"let(?:'|’)s continue working on\s+(.+)", plain, re.IGNORECASE)
+        if resume:
+            return await self._resume(resume.group(1).strip(), current_pid)
+        if re.fullmatch(r"continue working", plain, re.IGNORECASE):
+            return await self._resume("", current_pid)
+
+        implicit_resume = re.fullmatch(r"(?:continue|resume)\s+(.+)", plain,
+                                       re.IGNORECASE)
+        if implicit_resume:
+            name = implicit_resume.group(1).strip()
+            has_command_keyword = re.search(
+                r"\b(?:working|on|with|project)\b", name, re.IGNORECASE)
+            if not has_command_keyword:
+                project = self.state.find_project(name)
+                candidates = self._project_candidates(name)
+                if ((project and project["status"] == "active")
+                        or len(candidates) > 1):
+                    return await self._resume(name, current_pid)
+
+        where_status = re.fullmatch(
+            r"where did we leave off"
+            r"(?:\s+(?:of|on|for)\s+(?:project\s+)?(.+))?",
+            plain, re.IGNORECASE)
+        if where_status:
+            return await self._project_status(
+                (where_status.group(1) or "").strip(), current_pid)
+
+        what_status = re.fullmatch(
+            r"what(?:'|’)s the status"
+            r"(?:\s+(of|on)\s+(?:(project)\s+)?(.+))?",
+            plain, re.IGNORECASE)
+        if what_status:
+            name = (what_status.group(3) or "").strip()
+            if not name:
+                return None
+            if not what_status.group(2):
+                project = self.state.find_project(name)
+                if not project or project["status"] != "active":
+                    return None
+            return await self._project_status(name, current_pid)
+
+        next_step = re.fullmatch(r"(?:add\s+)?next step\s*:\s*(.+)", command,
+                                 re.IGNORECASE | re.DOTALL)
+        if next_step:
+            body = next_step.group(1).strip()
+            if not current_pid:
+                return self._ask_for_project(), None
+            self.state.log_step(current_pid, "next", body)
+            steps = self.state.steps(current_pid, "next", limit=5)
+            listing = "\n".join(
+                f"{index}. {step['body']}" for index, step in enumerate(steps, 1))
+            return f"Added next step. Open next steps:\n{listing}", current_pid
+
+        problem = re.fullmatch(r"problem\s*:\s*(.+)", command,
+                               re.IGNORECASE | re.DOTALL)
+        if problem:
+            if not current_pid:
+                return self._ask_for_project(), None
+            body = problem.group(1).strip()
+            self.state.log_step(current_pid, "problem", body)
+            return f"Recorded the problem: {body}", current_pid
+
+        decision = re.fullmatch(
+            r"decision\s*:\s*(.+?)\s+because\s+(.+)", command,
+            re.IGNORECASE | re.DOTALL)
+        if decision:
+            if not current_pid:
+                return self._ask_for_project(), None
+            choice, rationale = decision.group(1).strip(), decision.group(2).strip()
+            self.state.record_decision(current_pid, choice, rationale)
+            return f"Recorded the decision: {choice} ({rationale}).", current_pid
+
+        done = re.fullmatch(r"done\s*:\s*(.+)", command,
+                            re.IGNORECASE | re.DOTALL)
+        if done:
+            if not current_pid:
+                return self._ask_for_project(), None
+            body = done.group(1).strip()
+            self.state.log_step(current_pid, "done", body)
+            matching = next(
+                (step for step in self.state.steps(current_pid, "next")
+                 if step["body"].casefold() == body.casefold()),
+                None,
+            )
+            if matching:
+                self.state.close_step(matching["id"], closed_by_kind="done")
+            return f"Recorded as done: {body}", current_pid
+
+        new_project = re.fullmatch(r"new project\s+(.+)", plain, re.IGNORECASE)
+        if new_project:
+            specification = new_project.group(1).strip()
+            root = None
+            root_matches = list(re.finditer(r"\s+in\s+(.+)$", specification,
+                                            re.IGNORECASE))
+            if root_matches:
+                root_match = root_matches[-1]
+                root = root_match.group(1).strip()
+                specification = specification[:root_match.start()].strip()
+            if ":" in specification:
+                name, goal = (part.strip() for part in specification.split(":", 1))
+            else:
+                name, goal = specification, ""
+            if not name:
+                return "Please provide a name for the new project.", current_pid
+            if root:
+                root_path = Path(root).expanduser()
+                if not root_path.is_dir():
+                    return (f"I didn't create {name}: {root} isn't an existing "
+                            "directory."), current_pid
+                root = str(root_path.resolve())
+            pid = self.state.create_project(name, goal, root=root)
+            self.active_project = pid
+            self.state.set_setting("current_project", pid)
+            suffix = f" Root: {root}." if root else ""
+            return f"Created and switched to project {name} ({pid}).{suffix}", pid
+
+        return None
+
+    def _ask_for_project(self) -> str:
+        return "Which project should I use? " + self._active_project_listing()
+
+    async def _project_status(
+        self, name: str, fallback_pid: str | None,
+    ) -> tuple[str, str | None]:
+        query = name or fallback_pid
+        project = self.state.find_project(query) if query else None
+        if project and project["status"] != "active":
+            project = None
+        if not project:
+            if name:
+                candidates = self._project_candidates(name)
+                if len(candidates) > 1:
+                    listing = ", ".join(
+                        f"{item['name']} ({item['id']})" for item in candidates)
+                    return f"That name is ambiguous: {listing}. Which project?", fallback_pid
+                return f"I couldn't find an active project named {name}. " + (
+                    self._active_project_listing()), fallback_pid
+            return self._ask_for_project(), fallback_pid
+
+        brief = self.state.resume_brief(project["id"])
+        briefing, _ = self._conversation_briefing(project["id"], base=brief)
+        recent = self._recent_conversation(project["id"])
+        reply = await self._speak(
+            f"Summarize the current status of {project['name']} from the project brief. "
+            "Take no action.",
+            briefing, recent, [],
+        )
+        return reply, project["id"]
+
+    async def _resume(
+        self, name: str, fallback_pid: str | None,
+    ) -> tuple[str, str | None]:
+        query = name or fallback_pid
+        project = self.state.find_project(query) if query else None
+        if project and project["status"] != "active":
+            project = None
+        if not project:
+            if name:
+                candidates = self._project_candidates(name)
+                if len(candidates) > 1:
+                    listing = ", ".join(
+                        f"{item['name']} ({item['id']})" for item in candidates)
+                    return f"That project name is ambiguous: {listing}. Which one?", fallback_pid
+                return f"I couldn't find an active project named {name}. " + (
+                    self._active_project_listing()), fallback_pid
+            return self._ask_for_project(), fallback_pid
+
+        pid = project["id"]
+        self.active_project = pid
+        self.state.set_setting("current_project", pid)
+        brief = self.state.resume_brief(pid)
+        next_steps = self.state.steps(pid, "next")
+        briefing, _ = self._conversation_briefing(pid, base=brief)
+        recent = self._recent_conversation(pid)
+        if not next_steps:
+            reply = await self._speak(
+                "Summarize this project briefly and ask what the next step should be.",
+                briefing, recent, [],
+            )
+            return reply, pid
+
+        step_body = next_steps[0]["body"]
+        planner_request = f"Next step for this project: {step_body}"
+        available = await self._network_capabilities()
+        offline = await self._offline_hands(available)
+        tasks = await planner.plan(
+            planner_request, briefing, self.cfg, pid,
+            available=sorted(set(available) | set(offline)),
+            recent_conversation=recent,
+            strict=True,
+        )
+        if not tasks:
+            self.state.log_step(pid, "note", f"could not plan step: {step_body}")
+            reply = await self._speak(
+                f"The next step is {step_body!r}, but I couldn't plan it. Explain that "
+                "and ask for a more specific step.",
+                briefing, recent, [],
+            )
+            return reply, pid
+
+        records, checked = await self._run_and_check(tasks, offline)
+        labels = ", ".join(label for _, _, label in records)
+        task_ids = [task.id for task, _, _ in records]
+        if records and all(label in {"verified", "done, unverified"}
+                           for _, _, label in records):
+            self.state.close_step(next_steps[0]["id"])
+            failure_prefix = f"{step_body} failed:"
+            for problem in self.state.steps(pid, "problem"):
+                if problem["body"].startswith(failure_prefix):
+                    self.state.close_step(problem["id"])
+            summaries = "; ".join(
+                f"{task.capability}: {(result.summary or result.error or '')[:200]}"
+                for task, result, _ in records
+            )
+            self.state.log_step(
+                pid, "done", f"{step_body} — {labels}: {summaries}", task_ids)
+        elif any(label == "failed" for _, _, label in records):
+            notes = "; ".join(
+                f"{task.capability}: {(result.error or result.summary or 'failed')[:200]}"
+                for task, result, label in records if label == "failed"
+            )
+            self.state.log_step(
+                pid, "problem", f"{step_body} failed: {notes}", task_ids)
+        elif any(label == "awaiting approval" for _, _, label in records):
+            for task, result, label in records:
+                if label != "awaiting approval":
+                    continue
+                pending = re.search(
+                    r"pending change #(\d+)", result.summary or "")
+                if pending:
+                    change = pending.group(1)
+                elif task.capability in GATED:
+                    actions = [
+                        action for action in self.state.pending_actions()
+                        if action["project_id"] == pid
+                    ]
+                    change = str(actions[-1]["id"]) if actions else "unknown"
+                else:
+                    continue
+                self.state.log_step(
+                    pid, "note",
+                    f"awaiting approval: {step_body} (pending change #{change})",
+                    task_ids,
+                )
+                if change.isdigit():
+                    self.state.set_setting(
+                        f"pending_step:{change}",
+                        json.dumps({
+                            "step": next_steps[0]["id"],
+                            "only": task.capability in GATED and all(
+                                other_label in {"verified", "done, unverified"}
+                                for other_task, _, other_label in records
+                                if other_task.id != task.id
+                            ),
+                        }),
+                    )
+        outcomes = ", ".join(
+            f"[{task.capability}] {label}" for task, _, label in records)
+        state_line = f"Project state: {step_body} — {outcomes}."
+        open_steps = self.state.steps(pid, "next")
+        if open_steps:
+            state_line += f" Next open step: {open_steps[0]['body']}."
+        else:
+            state_line += " No open next step remains."
+        checked.append(state_line)
+        reply = await self._speak_and_attach(
+            step_body, tasks, records, checked, briefing, recent)
+        return reply, pid
 
     def _asks_about_own_screen(self, message: str) -> bool:
         """"What's on my screen?" -- but "what's on the zenbook's screen" is a
@@ -601,6 +956,25 @@ class Alfred:
 
     # ---- owner approval gate ---------------------------------------------
 
+    @staticmethod
+    def _pending_step_mapping(value: str) -> tuple[str | None, bool]:
+        try:
+            mapping = json.loads(value)
+        except json.JSONDecodeError:
+            mapping = value
+        if isinstance(mapping, dict):
+            step_id = mapping.get("step")
+            if (isinstance(step_id, bool)
+                    or not isinstance(step_id, (int, str))
+                    or not str(step_id).isdigit()):
+                return None, False
+            return str(step_id), mapping.get("only") is True
+        if isinstance(mapping, int) and not isinstance(mapping, bool):
+            return str(mapping), True
+        if isinstance(mapping, str) and mapping.isdigit():
+            return mapping, True
+        return None, False
+
     async def approve_action(self, action_id: int) -> str:
         row = self.state.take_action(action_id)   # atomic; double-click safe
         if row is None:
@@ -612,6 +986,45 @@ class Alfred:
         task.idempotency_key = task.idempotency_key or f"approved-action:{action_id}"
         result = await self._dispatch(task)
         self.state.settle_action(action_id, result.ok, result.summary or result.error or "")
+        setting_key = f"pending_step:{action_id}"
+        mapping = self.state.setting(setting_key)
+        step_id, only = (
+            self._pending_step_mapping(mapping) if mapping else (None, False))
+        if step_id:
+            step = next(
+                (item for item in self.state.steps(row["project_id"], "next")
+                 if str(item["id"]) == step_id),
+                None,
+            )
+            if step:
+                if result.ok:
+                    label = planner.outcome(task, result)
+                    if only:
+                        self.state.close_step(int(step_id))
+                        summary = (result.summary or "")[:200]
+                        self.state.log_step(
+                            row["project_id"], "done",
+                            f"{step['body']} — approved, {label}: {summary}",
+                            [task.id],
+                        )
+                        failure_prefix = f"{step['body']} failed:"
+                        for problem in self.state.steps(
+                                row["project_id"], "problem"):
+                            if problem["body"].startswith(failure_prefix):
+                                self.state.close_step(problem["id"])
+                    else:
+                        self.state.log_step(
+                            row["project_id"], "note",
+                            f"approved change #{action_id} ran ({label}); "
+                            "the rest of this step still needs to run",
+                            [task.id],
+                        )
+                else:
+                    error = (result.error or result.summary or "failed")[:200]
+                    self.state.log_step(
+                        row["project_id"], "problem",
+                        f"{step['body']} failed: {error}", [task.id])
+        self.state.set_setting(setting_key, "")
         outcome = result.summary if result.ok else f"failed: {result.error}"
         if task.capability == "ui.act":
             self.hands.record(row["description"], hands_outcome(result), result.ok)
@@ -621,7 +1034,32 @@ class Alfred:
         return outcome
 
     def decline_action(self, action_id: int) -> str:
+        row = next(
+            (item for item in self.state.pending_actions()
+             if item["id"] == action_id),
+            None,
+        )
         if self.state.decline_action(action_id):
+            setting_key = f"pending_step:{action_id}"
+            mapping = self.state.setting(setting_key)
+            step_id, _ = (
+                self._pending_step_mapping(mapping) if mapping else (None, False))
+            if step_id:
+                step = None
+                if row:
+                    step = next(
+                        (item for item in self.state.steps(
+                            row["project_id"], "next")
+                         if str(item["id"]) == step_id),
+                        None,
+                    )
+                if step and row:
+                    self.state.log_step(
+                        row["project_id"], "note",
+                        f"owner declined pending change #{action_id} for: "
+                        f"{step['body']}",
+                    )
+                self.state.set_setting(setting_key, "")
             return f"declined pending change #{action_id}"
         return f"pending change #{action_id} is not awaiting approval"
 

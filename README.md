@@ -11,6 +11,13 @@ ALFRED IS NOT HIS OS, and the code layout now says so.
 
 Run him: see micron-os/DEPLOY.md -- the house fetches its butler.
 
+## Projects: resume where you stopped
+
+Say “continue working on Project X” or “resume Project X” to load its goal,
+files, decisions, completed work, problems and next steps. Add a next step with
+“next step: …”; Alfred records verified outcomes and keeps unfinished work
+across restarts.
+
 ## Other machines (the Zenbook, a Pi, a spare laptop)
 
 The desktop is the brain. It hosts the bus (`nats-server`, installed by

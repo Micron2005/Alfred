@@ -16,6 +16,13 @@ from alfred.worker.handlers.marketing import list_briefs
 
 log = logging.getLogger("alfred.planner")
 
+PROPOSED = "proposed"
+RUNNING = "running"
+_UNVERIFIED_MARKERS = (
+    "not yet tested", "unverified", "no mechanical check", "partial",
+    "unconfirmed", "NOT DONE",
+)
+
 PLANNER_SYSTEM = (
     "You decompose engineering and business requests into delegatable tasks. Return JSON "
     "only, no prose, no markdown fences. Be sparing: fewer, larger tasks beat "
@@ -68,7 +75,8 @@ INPUT_HINTS = {
         "inputs: {\"command\": str, \"stdin\": str (optional, fed to the program), "
         "\"workdir\": str (optional; when it depends_on a code.write it runs where "
         "that file was written, so name the file in the command, e.g. "
-        "\"python3 calc.py 120 95\")}"
+        "\"python3 calc.py 120 95\"); when the project has a Root, use it as "
+        "workdir unless the step names another}"
     ),
     "docs.write": (
         "inputs: {\"filename\": str, \"sections\": [{\"heading\": str, \"body\": str}]}"
@@ -117,6 +125,7 @@ async def plan(
     available: list[str] | None = None,
     *,
     recent_conversation: str = "",
+    strict: bool = False,
 ) -> list[Task]:
     """Ask for a plan, then assume the answer is wrong until it validates.
 
@@ -171,6 +180,9 @@ async def plan(
             )
             log.warning("plan attempt %d rejected: %s", attempt + 1, rejected)
             continue
+        if rejected and strict:
+            log.error("strict plan rejected after 3 attempts: %s", rejected)
+            return []
         return tasks
 
     log.error("planner failed 3 times; handling this turn without delegation")
@@ -251,9 +263,11 @@ def verify(task: Task, result: TaskResult) -> tuple[bool, str]:
     exists, use the real check. Where none exists, say so plainly and let
     Alfred read the artifact himself.
     """
-    if result.status == "pending" and task.capability in ("os.apply", "ui.act"):
-        return True, ("NOT DONE: parked as a pending change; nothing happens until "
-                      "the owner approves it")
+    if result.status == "pending":
+        if task.capability in ("os.apply", "ui.act"):
+            return True, ("NOT DONE: parked as a pending change; nothing happens until "
+                          "the owner approves it")
+        return True, "NOT DONE: waiting on a change awaiting the owner's approval"
 
     if not result.ok:
         return False, result.error or "worker reported failure"
@@ -324,3 +338,14 @@ def verify(task: Task, result: TaskResult) -> tuple[bool, str]:
         return True, "device acknowledged"
 
     return True, "no mechanical check available for this capability"
+
+
+def outcome(task: Task, result: TaskResult) -> str:
+    if result.status == "pending":
+        return "awaiting approval"
+    passed, note = verify(task, result)
+    if not passed:
+        return "failed"
+    if any(marker in note for marker in _UNVERIFIED_MARKERS):
+        return "done, unverified"
+    return "verified"
