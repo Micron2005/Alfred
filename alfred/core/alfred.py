@@ -196,6 +196,7 @@ class Alfred:
                 t for t in remaining.values()
                 if all(dep in results for dep in t.depends_on)
             ]
+            resolved = False
             for task in ready[:]:
                 waiting = [d for d in task.depends_on
                            if results[d].status == "pending"]
@@ -208,6 +209,7 @@ class Alfred:
                     )
                     remaining.pop(task.id)
                     ready.remove(task)
+                    resolved = True
                     continue
                 blocked = [d for d in task.depends_on
                            if results[d].status == "rejected" and results[d].worker_id == "none"]
@@ -218,9 +220,12 @@ class Alfred:
                     )
                     remaining.pop(task.id)
                     ready.remove(task)
+                    resolved = True
             if not ready and not remaining:
                 break
             if not ready:
+                if resolved:
+                    continue
                 for t in remaining.values():
                     results[t.id] = TaskResult(
                         task_id=t.id, worker_id="none", status="error",

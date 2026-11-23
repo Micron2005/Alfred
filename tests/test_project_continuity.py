@@ -546,6 +546,47 @@ class ProjectContinuityTests(unittest.IsolatedAsyncioTestCase):
             pid, "next", open_only=False) if item["id"] == step_id)
         self.assertEqual(step["status"], "open")
 
+    async def test_pending_approval_propagates_through_task_chain(self):
+        core = self.make_core()
+        pid = core.state.create_project(
+            "Approval Chain", "Park an approval chain",
+            root=str(self.project_root))
+        apply = Task(
+            capability="os.apply",
+            prompt="Write the requested file",
+            project_id=pid,
+            inputs={"action": "file_write", "args": {
+                "path": str(self.project_root / "protected.txt"),
+                "content": "approved only",
+            }},
+        )
+        test = Task(
+            capability="code.test",
+            prompt="Test the protected file change",
+            project_id=pid,
+            depends_on=[apply.id],
+        )
+        docs = Task(
+            capability="docs.write",
+            prompt="Document the protected file change",
+            project_id=pid,
+            depends_on=[test.id],
+        )
+
+        with patch.object(core, "_dispatch_now", new_callable=AsyncMock) as dispatch:
+            results = await core._run_graph([apply, test, docs], {})
+
+        dispatch.assert_not_awaited()
+        self.assertEqual(
+            [results[task.id].status for task in (apply, test, docs)],
+            ["pending", "pending", "pending"],
+        )
+        self.assertEqual(
+            [planner.outcome(task, results[task.id])
+             for task in (apply, test, docs)],
+            ["awaiting approval", "awaiting approval", "awaiting approval"],
+        )
+
     async def test_restart_restores_project_and_status_does_not_plan(self):
         first = self.make_core()
         pid = first.state.create_project(
