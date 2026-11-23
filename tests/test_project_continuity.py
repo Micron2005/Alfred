@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import sqlite3
 import tempfile
@@ -446,7 +447,10 @@ class ProjectContinuityTests(unittest.IsolatedAsyncioTestCase):
     async def test_approved_project_step_is_closed_and_logged_done(self):
         core, pid, step_id, task, action = await self._resume_with_gated_action()
         setting_key = f"pending_step:{action['id']}"
-        self.assertEqual(core.state.setting(setting_key), str(step_id))
+        self.assertEqual(
+            json.loads(core.state.setting(setting_key)),
+            {"step": step_id, "only": True},
+        )
         result = TaskResult(
             task_id=task.id, worker_id="test", summary="file written")
 
@@ -485,6 +489,10 @@ class ProjectContinuityTests(unittest.IsolatedAsyncioTestCase):
     async def test_declined_project_step_logs_note_and_stays_open(self):
         core, pid, step_id, _, action = await self._resume_with_gated_action()
         setting_key = f"pending_step:{action['id']}"
+        self.assertEqual(
+            json.loads(core.state.setting(setting_key)),
+            {"step": step_id, "only": True},
+        )
 
         self.assertEqual(core.decline_action(action["id"]),
                          f"declined pending change #{action['id']}")
@@ -498,6 +506,70 @@ class ProjectContinuityTests(unittest.IsolatedAsyncioTestCase):
             f"owner declined pending change #{action['id']} for: "
             "Edit a protected file",
         )
+        self.assertEqual(core.state.setting(setting_key), "")
+
+    async def test_approved_project_step_with_dependents_stays_open(self):
+        core = self.make_core()
+        pid = core.state.create_project(
+            "Multi-task Approval", "Make and test a protected change",
+            root=str(self.project_root))
+        step_id = core.state.log_step(
+            pid, "next", "Edit and test a protected file")
+        change = Task(
+            capability="os.apply",
+            prompt="Write the requested file",
+            project_id=pid,
+            inputs={"action": "file_write", "args": {
+                "path": str(self.project_root / "protected.txt"),
+                "content": "approved only",
+            }},
+        )
+        test = Task(
+            capability="code.test",
+            prompt="Test the protected file change",
+            project_id=pid,
+            depends_on=[change.id],
+            inputs={"workdir": str(self.project_root),
+                    "command": "python -m unittest -q"},
+        )
+        tasks = [change, test]
+
+        with (
+            patch.object(core, "_network_capabilities", new_callable=AsyncMock,
+                         return_value=["os.apply", "code.test"]),
+            patch.object(core, "_offline_hands", new_callable=AsyncMock,
+                         return_value={}),
+            patch.object(planner, "plan", new_callable=AsyncMock,
+                         return_value=tasks),
+            patch.object(core, "_dispatch_now", new_callable=AsyncMock) as dispatch,
+            patch.object(core, "_speak", new_callable=AsyncMock,
+                         return_value="Waiting for approval."),
+        ):
+            await core.converse("continue working on Multi-task Approval")
+
+        dispatch.assert_not_awaited()
+        action = core.state.pending_actions()[0]
+        setting_key = f"pending_step:{action['id']}"
+        self.assertEqual(
+            json.loads(core.state.setting(setting_key)),
+            {"step": step_id, "only": False},
+        )
+        result = TaskResult(
+            task_id=change.id, worker_id="test", summary="file written")
+
+        with patch.object(core, "_dispatch_now", new_callable=AsyncMock,
+                          return_value=result) as approve_dispatch:
+            await core.approve_action(action["id"])
+
+        approve_dispatch.assert_awaited_once()
+        step = next(item for item in core.state.steps(
+            pid, "next", open_only=False) if item["id"] == step_id)
+        self.assertEqual(step["status"], "open")
+        self.assertEqual(core.state.steps(pid, "done"), [])
+        note = next(
+            item for item in core.state.steps(pid, "note")
+            if item["body"].startswith(f"approved change #{action['id']} ran"))
+        self.assertIn("the rest of this step still needs to run", note["body"])
         self.assertEqual(core.state.setting(setting_key), "")
 
     async def test_dependent_task_waits_for_project_approval(self):

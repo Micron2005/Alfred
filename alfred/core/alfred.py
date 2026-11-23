@@ -740,7 +740,12 @@ class Alfred:
                 )
                 if change.isdigit():
                     self.state.set_setting(
-                        f"pending_step:{change}", str(next_steps[0]["id"]))
+                        f"pending_step:{change}",
+                        json.dumps({
+                            "step": next_steps[0]["id"],
+                            "only": len(tasks) == 1 and task.capability in GATED,
+                        }),
+                    )
         outcomes = ", ".join(
             f"[{task.capability}] {label}" for task, _, label in records)
         state_line = f"Project state: {step_body} — {outcomes}."
@@ -947,6 +952,25 @@ class Alfred:
 
     # ---- owner approval gate ---------------------------------------------
 
+    @staticmethod
+    def _pending_step_mapping(value: str) -> tuple[str | None, bool]:
+        try:
+            mapping = json.loads(value)
+        except json.JSONDecodeError:
+            mapping = value
+        if isinstance(mapping, dict):
+            step_id = mapping.get("step")
+            if (isinstance(step_id, bool)
+                    or not isinstance(step_id, (int, str))
+                    or not str(step_id).isdigit()):
+                return None, False
+            return str(step_id), mapping.get("only") is True
+        if isinstance(mapping, int) and not isinstance(mapping, bool):
+            return str(mapping), True
+        if isinstance(mapping, str) and mapping.isdigit():
+            return mapping, True
+        return None, False
+
     async def approve_action(self, action_id: int) -> str:
         row = self.state.take_action(action_id)   # atomic; double-click safe
         if row is None:
@@ -959,7 +983,9 @@ class Alfred:
         result = await self._dispatch(task)
         self.state.settle_action(action_id, result.ok, result.summary or result.error or "")
         setting_key = f"pending_step:{action_id}"
-        step_id = self.state.setting(setting_key)
+        mapping = self.state.setting(setting_key)
+        step_id, only = (
+            self._pending_step_mapping(mapping) if mapping else (None, False))
         if step_id:
             step = next(
                 (item for item in self.state.steps(row["project_id"], "next")
@@ -968,18 +994,27 @@ class Alfred:
             )
             if step:
                 if result.ok:
-                    self.state.close_step(int(step_id))
-                    summary = (result.summary or "")[:200]
-                    self.state.log_step(
-                        row["project_id"], "done",
-                        f"{step['body']} — approved, {planner.outcome(task, result)}: "
-                        f"{summary}",
-                        [task.id],
-                    )
-                    failure_prefix = f"{step['body']} failed:"
-                    for problem in self.state.steps(row["project_id"], "problem"):
-                        if problem["body"].startswith(failure_prefix):
-                            self.state.close_step(problem["id"])
+                    label = planner.outcome(task, result)
+                    if only:
+                        self.state.close_step(int(step_id))
+                        summary = (result.summary or "")[:200]
+                        self.state.log_step(
+                            row["project_id"], "done",
+                            f"{step['body']} — approved, {label}: {summary}",
+                            [task.id],
+                        )
+                        failure_prefix = f"{step['body']} failed:"
+                        for problem in self.state.steps(
+                                row["project_id"], "problem"):
+                            if problem["body"].startswith(failure_prefix):
+                                self.state.close_step(problem["id"])
+                    else:
+                        self.state.log_step(
+                            row["project_id"], "note",
+                            f"approved change #{action_id} ran ({label}); "
+                            "the rest of this step still needs to run",
+                            [task.id],
+                        )
                 else:
                     error = (result.error or result.summary or "failed")[:200]
                     self.state.log_step(
@@ -1002,7 +1037,9 @@ class Alfred:
         )
         if self.state.decline_action(action_id):
             setting_key = f"pending_step:{action_id}"
-            step_id = self.state.setting(setting_key)
+            mapping = self.state.setting(setting_key)
+            step_id, _ = (
+                self._pending_step_mapping(mapping) if mapping else (None, False))
             if step_id:
                 step = None
                 if row:
