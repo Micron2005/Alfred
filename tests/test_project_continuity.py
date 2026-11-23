@@ -131,11 +131,17 @@ class ProjectContinuityTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(expected, brief)
         self.assertLessEqual(len(brief), 3000)
 
-    async def _resume_with_code_test(self, failing=False):
-        core = self.make_core()
-        project_name = "Failing Project" if failing else "Passing Project"
-        pid = core.state.create_project(
-            project_name, "Run its unit tests", root=str(self.project_root))
+    async def _resume_with_code_test(self, failing=False, core=None, pid=None):
+        if core is None:
+            core = self.make_core()
+        if pid is None:
+            project_name = "Failing Project" if failing else "Passing Project"
+            pid = core.state.create_project(
+                project_name, "Run its unit tests", root=str(self.project_root))
+            step_id = core.state.log_step(pid, "next", "Run the test suite")
+        else:
+            project_name = core.state.project(pid)["name"]
+            step_id = core.state.steps(pid, "next")[0]["id"]
         if failing:
             test_source = (
                 "import unittest\n"
@@ -151,7 +157,6 @@ class ProjectContinuityTests(unittest.IsolatedAsyncioTestCase):
                 "        self.assertEqual(1, 1)\n"
             )
         (self.project_root / "test_ok.py").write_text(test_source)
-        step = core.state.log_step(pid, "next", "Run the test suite")
         task = Task(
             capability="code.test",
             prompt="Run the project unit tests",
@@ -200,7 +205,7 @@ class ProjectContinuityTests(unittest.IsolatedAsyncioTestCase):
             offline.stop()
             network.stop()
         steps = core.state.steps(pid, "next", open_only=False)
-        return core, pid, step, reply, spoken, steps
+        return core, pid, step_id, reply, spoken, steps
 
     async def test_resume_runs_real_code_test_and_logs_verified_completion(self):
         core, pid, step_id, reply, spoken, steps = await self._resume_with_code_test()
@@ -223,6 +228,71 @@ class ProjectContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Run the test suite failed:", problem["body"])
         self.assertIn("tests failed", problem["body"])
         self.assertIn("[code.test] failed", reply)
+
+    async def test_ordinary_continue_and_status_messages_stay_conversational(self):
+        core = self.make_core()
+        pid = core.state.create_project("Rover", "Drive around the garden")
+        core.active_project = pid
+        core.state.set_setting("current_project", pid)
+        messages = (
+            "continue",
+            "keep going",
+            "pick up milk",
+            "resume the download",
+            "what's the status",
+            "what's the status of my order",
+        )
+
+        with patch.object(
+            core, "_converse", new_callable=AsyncMock, return_value="conversation"
+        ) as converse:
+            for message in messages:
+                self.assertEqual(
+                    await core.converse(message, project_id=pid), "conversation")
+
+        self.assertEqual(converse.await_count, len(messages))
+        self.assertEqual(core.active_project, pid)
+        self.assertEqual(core.state.setting("current_project"), pid)
+
+        explicit_status = await core.converse(
+            "what's the status of project Nonexistent", project_id=pid)
+        self.assertIn("couldn't find an active project named Nonexistent",
+                      explicit_status)
+        self.assertIn("Rover", explicit_status)
+
+    async def test_implicit_resume_resolves_project_and_continue_working_uses_current(self):
+        core = self.make_core()
+        rover = core.state.create_project("Rover", "Drive around the garden")
+        with (
+            patch.object(core, "_speak", new_callable=AsyncMock,
+                         return_value="Rover has no open next step."),
+            patch.object(core, "_converse", new_callable=AsyncMock) as converse,
+        ):
+            await core.converse("resume rover")
+            self.assertEqual(core.active_project, rover)
+            self.assertEqual(core.state.setting("current_project"), rover)
+            await core.converse("continue working")
+
+        converse.assert_not_awaited()
+        self.assertEqual(core.active_project, rover)
+
+    async def test_successful_retry_closes_prior_step_problem(self):
+        core, pid, step_id, _, _, _ = await self._resume_with_code_test(failing=True)
+        problem = core.state.steps(pid, "problem")[0]
+        self.assertEqual(problem["status"], "open")
+        self.assertTrue(problem["body"].startswith("Run the test suite failed:"))
+
+        core, retry_pid, retry_step_id, reply, _, steps = (
+            await self._resume_with_code_test(failing=False, core=core, pid=pid))
+
+        self.assertEqual(retry_pid, pid)
+        self.assertEqual(retry_step_id, step_id)
+        self.assertIn("[code.test] verified", reply)
+        closed_problem = core.state.steps(pid, "problem", open_only=False)[0]
+        self.assertEqual(closed_problem["status"], "closed")
+        self.assertIsNotNone(closed_problem["closed_at"])
+        step = next(item for item in steps if item["id"] == step_id)
+        self.assertEqual(step["status"], "closed")
 
     async def test_gated_action_is_parked_without_dispatch_and_step_stays_open(self):
         core = self.make_core()

@@ -487,22 +487,52 @@ class Alfred:
         current_pid = self._current_project_id(project_id)
 
         resume = re.fullmatch(
-            r"(?:continue|resume|keep going|carry on|pick up)(?:\s+working)?"
-            r"(?:\s+(?:(?:on|with)\s+)?(?:project\s+)?(.+))?",
+            r"(?:continue|resume|keep going|carry on|pick up)\s+"
+            r"(?:(?:working\s+on|on|with)\s+(?:project\s+)?|project\s+)(.+)",
             plain, re.IGNORECASE)
         if resume:
-            return await self._resume((resume.group(1) or "").strip(), current_pid)
-        resume = re.fullmatch(r"let(?:'|’)s continue(?:\s+(.+))?", plain, re.IGNORECASE)
+            return await self._resume(resume.group(1).strip(), current_pid)
+        resume = re.fullmatch(
+            r"let(?:'|’)s continue working on\s+(.+)", plain, re.IGNORECASE)
         if resume:
-            return await self._resume((resume.group(1) or "").strip(), current_pid)
+            return await self._resume(resume.group(1).strip(), current_pid)
+        if re.fullmatch(r"continue working", plain, re.IGNORECASE):
+            return await self._resume("", current_pid)
 
-        status = re.fullmatch(
-            r"(?:where did we leave off|what(?:'|’)s the status)"
+        implicit_resume = re.fullmatch(r"(?:continue|resume)\s+(.+)", plain,
+                                       re.IGNORECASE)
+        if implicit_resume:
+            name = implicit_resume.group(1).strip()
+            has_command_keyword = re.search(
+                r"\b(?:working|on|with|project)\b", name, re.IGNORECASE)
+            if not has_command_keyword:
+                project = self.state.find_project(name)
+                candidates = self._project_candidates(name)
+                if ((project and project["status"] == "active")
+                        or len(candidates) > 1):
+                    return await self._resume(name, current_pid)
+
+        where_status = re.fullmatch(
+            r"where did we leave off"
             r"(?:\s+(?:of|on|for)\s+(?:project\s+)?(.+))?",
             plain, re.IGNORECASE)
-        if status:
+        if where_status:
             return await self._project_status(
-                (status.group(1) or "").strip(), current_pid)
+                (where_status.group(1) or "").strip(), current_pid)
+
+        what_status = re.fullmatch(
+            r"what(?:'|’)s the status"
+            r"(?:\s+(of|on)\s+(?:(project)\s+)?(.+))?",
+            plain, re.IGNORECASE)
+        if what_status:
+            name = (what_status.group(3) or "").strip()
+            if not name:
+                return None
+            if not what_status.group(2):
+                project = self.state.find_project(name)
+                if not project or project["status"] != "active":
+                    return None
+            return await self._project_status(name, current_pid)
 
         next_step = re.fullmatch(r"(?:add\s+)?next step\s*:\s*(.+)", command,
                                  re.IGNORECASE | re.DOTALL)
@@ -669,6 +699,10 @@ class Alfred:
         if records and all(label in {"verified", "done, unverified"}
                            for _, _, label in records):
             self.state.close_step(next_steps[0]["id"])
+            failure_prefix = f"{step_body} failed:"
+            for problem in self.state.steps(pid, "problem"):
+                if problem["body"].startswith(failure_prefix):
+                    self.state.close_step(problem["id"])
             summaries = "; ".join(
                 f"{task.capability}: {(result.summary or result.error or '')[:200]}"
                 for task, result, _ in records
