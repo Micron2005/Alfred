@@ -229,6 +229,84 @@ class ProjectContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tests failed", problem["body"])
         self.assertIn("[code.test] failed", reply)
 
+    async def test_strict_resume_plan_rejections_keep_step_open(self):
+        core = self.make_core()
+        pid = core.state.create_project(
+            "Strict Resume", "Complete the partial plan",
+            root=str(self.project_root))
+        step_id = core.state.log_step(pid, "next", "Build the protected feature")
+        entries = [
+            {"ref": "test", "capability": "code.test",
+             "prompt": "Run the project tests"},
+            {"ref": "bad", "capability": "not.real",
+             "prompt": "Do an unsupported action"},
+        ]
+        result = TaskResult(
+            task_id="unused", worker_id="test", summary="passed",
+            data={"exit_code": 0})
+
+        with (
+            patch.object(core, "_network_capabilities", new_callable=AsyncMock,
+                         return_value=["code.test"]),
+            patch.object(core, "_offline_hands", new_callable=AsyncMock,
+                         return_value={}),
+            patch("alfred.core.planner.llm.complete_json",
+                  new_callable=AsyncMock, return_value=entries) as complete,
+            patch.object(core, "_dispatch_now", new_callable=AsyncMock,
+                         return_value=result) as dispatch,
+            patch.object(core, "_speak", new_callable=AsyncMock,
+                         return_value="Please make the step more specific."),
+        ):
+            reply = await core.converse("continue working on Strict Resume")
+
+        self.assertEqual(complete.await_count, 3)
+        dispatch.assert_not_awaited()
+        self.assertIn("more specific", reply)
+        step = next(item for item in core.state.steps(
+            pid, "next", open_only=False) if item["id"] == step_id)
+        self.assertEqual(step["status"], "open")
+        note = core.state.steps(pid, "note")[0]
+        self.assertEqual(note["body"],
+                         "could not plan step: Build the protected feature")
+
+    async def test_resume_saves_success_before_speak_failure(self):
+        core = self.make_core()
+        pid = core.state.create_project(
+            "Speak Failure", "Save work before replying",
+            root=str(self.project_root))
+        step_id = core.state.log_step(pid, "next", "Run the project tests")
+        task = Task(
+            capability="code.test",
+            prompt="Run the project tests",
+            project_id=pid,
+            inputs={"workdir": str(self.project_root),
+                    "command": "python -m unittest -q"},
+        )
+        result = TaskResult(
+            task_id=task.id, worker_id="test", summary="test suite passed",
+            data={"exit_code": 0})
+
+        with (
+            patch.object(core, "_network_capabilities", new_callable=AsyncMock,
+                         return_value=["code.test"]),
+            patch.object(core, "_offline_hands", new_callable=AsyncMock,
+                         return_value={}),
+            patch.object(planner, "plan", new_callable=AsyncMock,
+                         return_value=[task]),
+            patch.object(core, "_dispatch_now", new_callable=AsyncMock,
+                         return_value=result),
+            patch.object(core, "_speak", new_callable=AsyncMock,
+                         side_effect=RuntimeError("synthesis failed")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "synthesis failed"):
+                await core.converse("continue working on Speak Failure")
+
+        step = next(item for item in core.state.steps(
+            pid, "next", open_only=False) if item["id"] == step_id)
+        self.assertEqual(step["status"], "closed")
+        done = core.state.steps(pid, "done", open_only=False)[0]
+        self.assertIn("Run the project tests — verified", done["body"])
+
     async def test_ordinary_continue_and_status_messages_stay_conversational(self):
         core = self.make_core()
         pid = core.state.create_project("Rover", "Drive around the garden")

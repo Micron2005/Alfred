@@ -410,15 +410,16 @@ class Alfred:
 
         log.info("plan: %d tasks across %s", len(tasks),
                  ", ".join(sorted({t.capability for t in tasks})))
-        reply, _ = await self._carry_out(message, tasks, offline, briefing, recent)
+        records, checked = await self._run_and_check(tasks, offline)
+        reply = await self._speak_and_attach(
+            message, tasks, records, checked, briefing, recent)
         self._remember(message, reply, pending, project_id)
         self._learn_in_background(message)
         return reply
 
-    async def _carry_out(
-        self, message: str, tasks: list[Task], offline: dict[str, str],
-        briefing: str, recent: str,
-    ) -> tuple[str, list[tuple[Task, TaskResult, str]]]:
+    async def _run_and_check(
+        self, tasks: list[Task], offline: dict[str, str],
+    ) -> tuple[list[tuple[Task, TaskResult, str]], list[str]]:
         results = await self._run_graph(tasks, offline)
         checked: list[str] = []
         failed: list[str] = []
@@ -440,34 +441,17 @@ class Alfred:
                 "which, and why, in plain words:\n  - " + "\n  - ".join(failed)
             ))
 
-        prefix = "Next step for this project: "
-        if message.startswith(prefix) and tasks:
-            step_body = message[len(prefix):]
-            outcomes = ", ".join(
-                f"{task.capability} {label}" for task, _, label in records)
-            successful = all(
-                label in {"verified", "done, unverified"}
-                for _, _, label in records)
-            open_steps = self.state.steps(tasks[0].project_id, "next")
-            if successful:
-                removed = False
-                remaining = []
-                for step in open_steps:
-                    if not removed and step["body"].casefold() == step_body.casefold():
-                        removed = True
-                        continue
-                    remaining.append(step)
-                open_steps = remaining
-            state_line = f"Project state: {step_body} — {outcomes}."
-            if open_steps:
-                state_line += f" Next open step: {open_steps[0]['body']}."
-            else:
-                state_line += " No open next step remains."
-            checked.append(state_line)
+        return records, checked
 
+    async def _speak_and_attach(
+        self, message: str, tasks: list[Task],
+        records: list[tuple[Task, TaskResult, str]], checked: list[str],
+        briefing: str, recent: str,
+    ) -> str:
         reply = await self._speak(message, briefing, recent, checked)
+        results = {task.id: result for task, result, _ in records}
         reply = self._attach_deliverables(reply, tasks, results, self.local_worker_id)
-        return reply, records
+        return reply
 
     def _current_project_id(self, project_id: str | None) -> str | None:
         for candidate in (project_id, self.active_project):
@@ -705,8 +689,7 @@ class Alfred:
             )
             return reply, pid
 
-        reply, records = await self._carry_out(
-            request, tasks, offline, briefing, recent)
+        records, checked = await self._run_and_check(tasks, offline)
         labels = ", ".join(label for _, _, label in records)
         task_ids = [task.id for task, _, _ in records]
         if records and all(label in {"verified", "done, unverified"}
@@ -749,6 +732,20 @@ class Alfred:
                     f"awaiting approval: {step_body} (pending change #{change})",
                     task_ids,
                 )
+                if change.isdigit():
+                    self.state.set_setting(
+                        f"pending_step:{change}", str(next_steps[0]["id"]))
+        outcomes = ", ".join(
+            f"[{task.capability}] {label}" for task, _, label in records)
+        state_line = f"Project state: {step_body} — {outcomes}."
+        open_steps = self.state.steps(pid, "next")
+        if open_steps:
+            state_line += f" Next open step: {open_steps[0]['body']}."
+        else:
+            state_line += " No open next step remains."
+        checked.append(state_line)
+        reply = await self._speak_and_attach(
+            step_body, tasks, records, checked, briefing, recent)
         return reply, pid
 
     def _asks_about_own_screen(self, message: str) -> bool:
