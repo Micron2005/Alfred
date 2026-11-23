@@ -716,7 +716,8 @@ class Alfred:
             for task, result, label in records:
                 if label != "awaiting approval":
                     continue
-                pending = re.search(r"pending change #(\d+)", result.summary)
+                pending = re.search(
+                    r"pending change #(\d+)", result.summary or "")
                 if pending:
                     change = pending.group(1)
                 elif task.capability in GATED:
@@ -952,6 +953,34 @@ class Alfred:
         task.idempotency_key = task.idempotency_key or f"approved-action:{action_id}"
         result = await self._dispatch(task)
         self.state.settle_action(action_id, result.ok, result.summary or result.error or "")
+        setting_key = f"pending_step:{action_id}"
+        step_id = self.state.setting(setting_key)
+        if step_id:
+            step = next(
+                (item for item in self.state.steps(row["project_id"], "next")
+                 if str(item["id"]) == step_id),
+                None,
+            )
+            if step:
+                if result.ok:
+                    self.state.close_step(int(step_id))
+                    summary = (result.summary or "")[:200]
+                    self.state.log_step(
+                        row["project_id"], "done",
+                        f"{step['body']} — approved, {planner.outcome(task, result)}: "
+                        f"{summary}",
+                        [task.id],
+                    )
+                    failure_prefix = f"{step['body']} failed:"
+                    for problem in self.state.steps(row["project_id"], "problem"):
+                        if problem["body"].startswith(failure_prefix):
+                            self.state.close_step(problem["id"])
+                else:
+                    error = (result.error or result.summary or "failed")[:200]
+                    self.state.log_step(
+                        row["project_id"], "problem",
+                        f"{step['body']} failed: {error}", [task.id])
+        self.state.set_setting(setting_key, "")
         outcome = result.summary if result.ok else f"failed: {result.error}"
         if task.capability == "ui.act":
             self.hands.record(row["description"], hands_outcome(result), result.ok)
@@ -961,7 +990,30 @@ class Alfred:
         return outcome
 
     def decline_action(self, action_id: int) -> str:
+        row = next(
+            (item for item in self.state.pending_actions()
+             if item["id"] == action_id),
+            None,
+        )
         if self.state.decline_action(action_id):
+            setting_key = f"pending_step:{action_id}"
+            step_id = self.state.setting(setting_key)
+            if step_id:
+                step = None
+                if row:
+                    step = next(
+                        (item for item in self.state.steps(
+                            row["project_id"], "next")
+                         if str(item["id"]) == step_id),
+                        None,
+                    )
+                if step and row:
+                    self.state.log_step(
+                        row["project_id"], "note",
+                        f"owner declined pending change #{action_id} for: "
+                        f"{step['body']}",
+                    )
+                self.state.set_setting(setting_key, "")
             return f"declined pending change #{action_id}"
         return f"pending change #{action_id} is not awaiting approval"
 
